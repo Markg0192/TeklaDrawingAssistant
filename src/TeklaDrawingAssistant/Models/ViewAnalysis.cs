@@ -11,6 +11,7 @@ namespace TeklaDrawingAssistant.Models
         public ViewKind Kind { get; set; }
         public ViewBounds MainPartBounds { get; set; }
         public List<Point> HolePoints { get; } = new List<Point>();
+        public List<HoleGroup> HoleGroups { get; } = new List<HoleGroup>();
         public int PartCount { get; set; }
         public int BoltGroupCount { get; set; }
         public int ExistingDimensionSetCount { get; set; }
