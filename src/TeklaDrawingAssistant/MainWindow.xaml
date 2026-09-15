@@ -46,8 +46,8 @@
                 <Button Grid.Column="1" x:Name="DimensionButton" Content="Rebuild Hole Dimensions" Padding="18,8" Margin="0,0,18,0" Click="DimensionButton_Click"/>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,18,0">
-                    <TextBlock Text="Offset (mm)" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                    <TextBox x:Name="OffsetTextBox" Text="12" Width="52" Padding="4"/>
+                    <TextBlock Text="Min offset (mm)" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <TextBox x:Name="OffsetTextBox" Text="25" Width="52" Padding="4"/>
                 </StackPanel>
 
                 <StackPanel Grid.Column="3" VerticalAlignment="Center">
