@@ -1,10 +1,10 @@
 # Tekla Drawing Assistant
 
-Prototype drawing automation tool for Tekla Structures 2023, with the core drawing logic kept version-light so a 2026 adapter can be added later.
+Prototype drawing automation tool for Tekla Structures 2026. The drawing rules are kept separate from the Tekla session plumbing so a 2023 build can be added later without duplicating the core logic.
 
 ## What this first version does
 
-- Connects to the currently open Tekla Structures 2023 model and drawing.
+- Connects to the currently open Tekla Structures 2026 model and drawing.
 - Supports assembly drawings and single-part drawings.
 - Resolves the drawing main part from the model.
 - Reads every drawing view and checks whether the main part is visible.
@@ -38,9 +38,9 @@ Still to add:
 - .NET Framework 4.8
 - x64
 - C# 7.3
-- Tekla Structures Open API NuGet packages `2023.0.1`
+- Tekla Structures Open API NuGet packages `2026.0.3`
 
-The project mirrors the setup used by the existing GalvVent project: SDK-style WPF, `TSAppConfigPatcherTask`, and a `TeklaVersion` of `2023.0`.
+The project mirrors the setup used by the existing GalvVent project: SDK-style WPF, `TSAppConfigPatcherTask`, and a `TeklaVersion` of `2026.0`.
 
 ## First test
 
@@ -56,4 +56,4 @@ The next development step should be driven by one or two real assembly drawings 
 
 ## Version strategy
 
-Tekla 2023 is the primary production target because that is where the existing model base currently lives. The geometry and drawing-rule code is intentionally kept separate from session/model lookup code so a Tekla 2026 target can be introduced later without duplicating the dimensioning rules.
+Tekla 2026 is the primary working target because it is the version currently available for live testing. The geometry and drawing-rule code is intentionally kept separate from session/model lookup code so a Tekla 2023 target can be introduced later without duplicating the dimensioning rules.
