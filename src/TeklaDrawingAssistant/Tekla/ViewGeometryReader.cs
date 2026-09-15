@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using TeklaDrawingAssistant.Models;
 using Tekla.Structures;
 using Tekla.Structures.Drawing;
@@ -55,7 +54,7 @@ namespace TeklaDrawingAssistant.Tekla
             {
                 var points = new List<Point>();
                 var seenGroups = new HashSet<int>();
-                var drawingBolts = view.GetObjects(typeof(DrawingBolt));
+                var drawingBolts = view.GetObjects(new[] { typeof(DrawingBolt) });
 
                 while (drawingBolts.MoveNext())
                 {
@@ -86,7 +85,7 @@ namespace TeklaDrawingAssistant.Tekla
         public int CountObjects<T>(View view) where T : DrawingObject
         {
             var count = 0;
-            var objects = view.GetObjects(typeof(T));
+            var objects = view.GetObjects(new[] { typeof(T) });
             while (objects.MoveNext())
                 count++;
             return count;
