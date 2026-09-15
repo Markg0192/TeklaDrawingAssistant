@@ -107,7 +107,7 @@ namespace TeklaDrawingAssistant.Core
 
         private static void DeleteStraightDimensions(View view)
         {
-            var dimensions = view.GetObjects(typeof(StraightDimensionSet));
+            var dimensions = view.GetObjects(new[] { typeof(StraightDimensionSet) });
             var toDelete = new List<StraightDimensionSet>();
 
             while (dimensions.MoveNext())
