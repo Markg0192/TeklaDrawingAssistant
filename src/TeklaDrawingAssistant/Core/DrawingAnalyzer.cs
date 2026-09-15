@@ -58,7 +58,12 @@ namespace TeklaDrawingAssistant.Core
                 if (containsMainPart)
                 {
                     analysis.MainPartBounds = _geometryReader.GetPartBounds(view, mainPartIdentifier);
-                    analysis.HolePoints.AddRange(_geometryReader.GetVisibleBoltPositions(view));
+
+                    var holeGroups = _geometryReader.GetVisibleHoleGroups(view);
+                    analysis.HoleGroups.AddRange(holeGroups);
+
+                    foreach (var holeGroup in holeGroups)
+                        analysis.HolePoints.AddRange(holeGroup.Points);
                 }
 
                 result.Views.Add(analysis);
