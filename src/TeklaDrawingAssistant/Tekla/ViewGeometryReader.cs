@@ -48,11 +48,11 @@ namespace TeklaDrawingAssistant.Tekla
             });
         }
 
-        public List<Point> GetVisibleBoltPositions(View view)
+        public List<HoleGroup> GetVisibleHoleGroups(View view)
         {
             return WithViewTransformationPlane(view, () =>
             {
-                var points = new List<Point>();
+                var groups = new List<HoleGroup>();
                 var seenGroups = new HashSet<int>();
                 var drawingBolts = view.GetObjects(new[] { typeof(DrawingBolt) });
 
@@ -70,15 +70,23 @@ namespace TeklaDrawingAssistant.Tekla
                     if (boltGroup == null)
                         continue;
 
+                    var group = new HoleGroup
+                    {
+                        ModelIdentifierId = id.ID
+                    };
+
                     foreach (var item in boltGroup.BoltPositions)
                     {
                         var point = item as Point;
                         if (point != null)
-                            points.Add(new Point(point.X, point.Y, 0.0));
+                            group.Points.Add(new Point(point.X, point.Y, 0.0));
                     }
+
+                    if (group.Points.Count > 0)
+                        groups.Add(group);
                 }
 
-                return points;
+                return groups;
             });
         }
 
