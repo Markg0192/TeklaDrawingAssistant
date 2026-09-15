@@ -48,7 +48,7 @@ namespace TeklaDrawingAssistant.Core
                     Name = string.IsNullOrWhiteSpace(view.Name) ? "Unnamed view" : view.Name,
                     ContainsMainPart = containsMainPart,
                     Kind = containsMainPart ? _viewClassifier.Classify(view, mainPart) : ViewKind.Unknown,
-                    PartCount = _geometryReader.CountObjects<Tekla.Structures.Drawing.Part>(view),
+                    PartCount = _geometryReader.CountObjects<Part>(view),
                     BoltGroupCount = _geometryReader.CountObjects<DrawingBolt>(view),
                     ExistingDimensionSetCount = _geometryReader.CountObjects<StraightDimensionSet>(view),
                     MarkCount = _geometryReader.CountObjects<DrawingMark>(view),
