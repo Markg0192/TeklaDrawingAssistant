@@ -11,6 +11,7 @@ namespace TeklaDrawingAssistant.Core
         private readonly TeklaSession _session;
         private readonly DrawingAnalyzer _analyzer;
         private readonly HoleDimensioner _dimensioner;
+        private readonly PartFaceDimensioner _partDimensioner;
         private readonly FabricationContextBuilder _contextBuilder;
         private readonly DimensionRuleEngine _ruleEngine;
         private readonly FaceViewPlanner _faceViewPlanner;
@@ -20,6 +21,7 @@ namespace TeklaDrawingAssistant.Core
             _session = session;
             _analyzer = new DrawingAnalyzer(session);
             _dimensioner = new HoleDimensioner();
+            _partDimensioner = new PartFaceDimensioner(session.Model);
             _contextBuilder = new FabricationContextBuilder();
             _ruleEngine = new DimensionRuleEngine();
             _faceViewPlanner = new FaceViewPlanner(session.Model);
@@ -121,7 +123,9 @@ namespace TeklaDrawingAssistant.Core
             log.AppendLine("DIMENSIONING");
             log.AppendLine(new string('-', 40));
 
-            var totalCreated = 0;
+            var totalHoleDimensions = 0;
+            var totalPartDimensions = 0;
+
             foreach (var view in analysis.Views)
             {
                 if (!view.ContainsMainPart)
@@ -131,21 +135,29 @@ namespace TeklaDrawingAssistant.Core
                 }
 
                 var ownedHoleGroups = ownership.GetHoleGroups(view.View);
-                if (ownedHoleGroups.Count == 0)
+                var ownedParts = ownership.GetParts(view.View);
+
+                if (ownedHoleGroups.Count == 0 && ownedParts.Count == 0)
                 {
-                    log.AppendLine($"{view.Name}: no hole groups owned by this face view.");
+                    log.AppendLine($"{view.Name}: no fabrication features owned by this face view.");
                     continue;
                 }
 
                 if (view.Kind == ViewKind.Unknown)
                 {
-                    log.AppendLine($"{view.Name}: owns {ownedHoleGroups.Count} hole group(s), but the view is a custom/skew face and its dimension rule is not implemented yet.");
+                    log.AppendLine($"{view.Name}: owns {ownedParts.Count} part(s) and {ownedHoleGroups.Count} hole group(s), but this is a custom/skew face. View ownership is correct; its custom dimension rule is still to be added.");
                     continue;
                 }
 
-                var created = _dimensioner.Dimension(view, options, ownedHoleGroups);
-                totalCreated += created;
-                log.AppendLine($"{view.Name}: {view.Kind}, owns {ownedHoleGroups.Count} hole group(s), {created} dimension sets created.");
+                var holeDimensions = _dimensioner.Dimension(view, options, ownedHoleGroups);
+                var partDimensions = _partDimensioner.Dimension(view, ownedParts, options);
+
+                totalHoleDimensions += holeDimensions;
+                totalPartDimensions += partDimensions;
+
+                log.AppendLine(
+                    $"{view.Name}: {view.Kind}, owns {ownedParts.Count} part(s) / {ownedHoleGroups.Count} hole group(s), " +
+                    $"created {partDimensions} plate dimensions and {holeDimensions} hole dimensions.");
             }
 
             analysis.Drawing.CommitChanges();
@@ -154,7 +166,7 @@ namespace TeklaDrawingAssistant.Core
                 _session.DrawingHandler.SaveActiveDrawing();
 
             log.AppendLine();
-            log.AppendLine($"Created {totalCreated} dimension sets.");
+            log.AppendLine($"Created {totalPartDimensions} plate dimension sets and {totalHoleDimensions} hole dimension sets.");
             return log.ToString();
         }
 
