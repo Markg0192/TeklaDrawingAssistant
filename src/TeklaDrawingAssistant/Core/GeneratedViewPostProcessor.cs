@@ -13,10 +13,11 @@ namespace TeklaDrawingAssistant.Core
     /// <summary>
     /// Generated-view presentation pass.
     ///
-    /// Important rule: NO layout decisions are made before annotation generation.
-    /// Apply() only cleans generated views and matches their scale to the retained main view.
-    /// FinaliseLayout() runs after dimensions/marks etc. and uses each view's final paper-space
-    /// bounding box, including annotations, to pack the drawing without overlaps.
+    /// Important rules:
+    /// - NO placement decisions are made before annotation generation;
+    /// - generated views are kept at the retained main-view scale;
+    /// - final orthographic alignment comes from shared MODEL geometry, not view boxes;
+    /// - final paper-space bounding boxes are used only afterwards to close gaps without overlap.
     /// </summary>
     public sealed class GeneratedViewPostProcessor
     {
@@ -44,7 +45,7 @@ namespace TeklaDrawingAssistant.Core
 
         public void FinaliseLayout(DrawingAnalysisResult analysis, IList<string> messages)
         {
-            if (analysis == null || analysis.Drawing == null)
+            if (analysis == null || analysis.Drawing == null || analysis.MainPart == null)
                 return;
 
             var baseView = GetBaseView(analysis);
@@ -60,31 +61,37 @@ namespace TeklaDrawingAssistant.Core
             var top = FindView(analysis.Views, "TDA_TOP");
             var bottom = FindView(analysis.Views, "TDA_BOTTOM");
 
-            // 1. Build the horizontal row first: A-A | MAIN | B-B.
-            // End sections share the main view's vertical centre and are packed by the
-            // FINAL view bounding boxes, not by steel extents or guessed view width.
-            var baseBox = GetFinalBox(baseView.View);
-            var aBox = PlaceEndBesideBase(a, baseBox, true);
-            var bBox = PlaceEndBesideBase(b, baseBox, false);
+            // Orthographic alignment is based on the SAME physical model point in each view.
+            // If the views are at the same scale, aligning one common model datum also aligns
+            // every other point along their common projected axis: holes, plate faces, etc.
+            var modelDatum = analysis.MainPart.GetCoordinateSystem().Origin;
 
-            // 2. The top/bottom flange views share the main view's horizontal centre.
-            // Put them above/below the whole end/main/end row so no corner can overlap.
+            AlignHorizontalFromModelDatum(baseView, top, modelDatum);
+            AlignHorizontalFromModelDatum(baseView, bottom, modelDatum);
+            AlignVerticalFromModelDatum(baseView, a, modelDatum);
+            AlignVerticalFromModelDatum(baseView, b, modelDatum);
+            analysis.Drawing.CommitChanges();
+
+            // Now that physical geometry is aligned, use the FINAL annotated view boxes only
+            // to close the perpendicular gaps until the views are as close as possible without
+            // overlapping. Do not disturb the orthographic alignment axis.
+            var baseBox = GetFinalBox(baseView.View);
+            var aBox = PackEndBesideBase(a, baseBox, true);
+            var bBox = PackEndBesideBase(b, baseBox, false);
+
             var rowBoxes = new List<LayoutBox> { baseBox };
             if (aBox != null) rowBoxes.Add(aBox);
             if (bBox != null) rowBoxes.Add(bBox);
 
             var rowTop = rowBoxes.Max(box => box.MaxY);
             var rowBottom = rowBoxes.Min(box => box.MinY);
-            var mainCentreX = baseBox.CentreX;
 
-            var topBox = PlaceFlangeRelativeToRow(top, mainCentreX, rowTop, true);
-            var bottomBox = PlaceFlangeRelativeToRow(bottom, mainCentreX, rowBottom, false);
-
+            PackFlangeRelativeToRow(top, rowTop, true);
+            PackFlangeRelativeToRow(bottom, rowBottom, false);
             analysis.Drawing.CommitChanges();
 
-            // 3. Preserve all relative spacing and, if needed, translate the complete
-            // five-view cluster onto the sheet as one block. We never clamp one view on
-            // its own because that was the cause of A-A overlap / B-B drifting away.
+            // Preserve all alignment/spacing and translate the completed cluster as one block
+            // if it needs to be brought back onto the sheet.
             var arranged = new List<ViewAnalysis> { baseView };
             if (a != null) arranged.Add(a);
             if (b != null) arranged.Add(b);
@@ -95,12 +102,58 @@ namespace TeklaDrawingAssistant.Core
             analysis.Drawing.CommitChanges();
 
             messages?.Add(
-                "Final layout: used final paper-space view bounding boxes after annotation. " +
-                "A-A/MAIN/B-B aligned vertically; TOP/BOTTOM aligned horizontally; " +
-                "bounding boxes packed to " + ViewGap.ToString("0.#") + " mm without overlap.");
+                "Final layout: physical model datum used for orthographic alignment first; " +
+                "TOP/BOTTOM keep the same longitudinal X as MAIN and A-A/B-B keep the same vertical geometry as MAIN. " +
+                "Final annotated bounding boxes are then packed to " + ViewGap.ToString("0.#") + " mm without overlap.");
         }
 
-        private static LayoutBox PlaceEndBesideBase(ViewAnalysis section, LayoutBox baseBox, bool startEnd)
+        private static void AlignHorizontalFromModelDatum(
+            ViewAnalysis source,
+            ViewAnalysis target,
+            Point modelDatum)
+        {
+            if (source == null || source.View == null || target == null || target.View == null)
+                return;
+
+            var sourcePoint = ModelPointOnSheet(source.View, modelDatum);
+            var targetPoint = ModelPointOnSheet(target.View, modelDatum);
+            Move(target.View, sourcePoint.X - targetPoint.X, 0.0);
+        }
+
+        private static void AlignVerticalFromModelDatum(
+            ViewAnalysis source,
+            ViewAnalysis target,
+            Point modelDatum)
+        {
+            if (source == null || source.View == null || target == null || target.View == null)
+                return;
+
+            var sourcePoint = ModelPointOnSheet(source.View, modelDatum);
+            var targetPoint = ModelPointOnSheet(target.View, modelDatum);
+            Move(target.View, 0.0, sourcePoint.Y - targetPoint.Y);
+        }
+
+        private static Point ModelPointOnSheet(DrawingView view, Point modelPoint)
+        {
+            var cs = view.DisplayCoordinateSystem;
+            var xAxis = Normalize(new Vector(cs.AxisX));
+            var yAxis = Normalize(new Vector(cs.AxisY));
+            var relative = new Vector(
+                modelPoint.X - cs.Origin.X,
+                modelPoint.Y - cs.Origin.Y,
+                modelPoint.Z - cs.Origin.Z);
+
+            var viewX = Dot(relative, xAxis);
+            var viewY = Dot(relative, yAxis);
+            var scale = GetScale(view);
+
+            return new Point(
+                view.Origin.X + viewX / scale,
+                view.Origin.Y + viewY / scale,
+                0.0);
+        }
+
+        private static LayoutBox PackEndBesideBase(ViewAnalysis section, LayoutBox baseBox, bool startEnd)
         {
             if (section == null || section.View == null || baseBox == null)
                 return null;
@@ -109,19 +162,17 @@ namespace TeklaDrawingAssistant.Core
             if (box == null)
                 return null;
 
-            var targetCentreY = baseBox.CentreY;
+            // Horizontal movement only: vertical geometry alignment was fixed from the model datum.
             var dx = startEnd
                 ? baseBox.MinX - ViewGap - box.MaxX
                 : baseBox.MaxX + ViewGap - box.MinX;
-            var dy = targetCentreY - box.CentreY;
 
-            Move(section.View, dx, dy);
-            return box.Translate(dx, dy);
+            Move(section.View, dx, 0.0);
+            return box.Translate(dx, 0.0);
         }
 
-        private static LayoutBox PlaceFlangeRelativeToRow(
+        private static LayoutBox PackFlangeRelativeToRow(
             ViewAnalysis flange,
-            double mainCentreX,
             double rowEdgeY,
             bool top)
         {
@@ -132,13 +183,13 @@ namespace TeklaDrawingAssistant.Core
             if (box == null)
                 return null;
 
-            var dx = mainCentreX - box.CentreX;
+            // Vertical movement only: longitudinal physical alignment with MAIN was fixed first.
             var dy = top
                 ? rowEdgeY + ViewGap - box.MinY
                 : rowEdgeY - ViewGap - box.MaxY;
 
-            Move(flange.View, dx, dy);
-            return box.Translate(dx, dy);
+            Move(flange.View, 0.0, dy);
+            return box.Translate(0.0, dy);
         }
 
         private static void TranslateClusterOntoSheet(Drawing drawing, IList<ViewAnalysis> views)
@@ -210,8 +261,6 @@ namespace TeklaDrawingAssistant.Core
             if (view == null)
                 return null;
 
-            // Tekla returns the view's size in PAPER coordinates and includes the
-            // annotation-expanded view frame. This is exactly what final layout needs.
             var box = view.GetAxisAlignedBoundingBox();
             if (box == null)
                 return null;
@@ -351,6 +400,13 @@ namespace TeklaDrawingAssistant.Core
                 string.Equals(view.View.Name ?? string.Empty, name, StringComparison.OrdinalIgnoreCase));
         }
 
+        private static double GetScale(DrawingView view)
+        {
+            return view != null && view.Attributes != null && view.Attributes.Scale > 0.0
+                ? view.Attributes.Scale
+                : 1.0;
+        }
+
         private static bool IsGenerated(DrawingView view)
         {
             var name = (view == null ? string.Empty : view.Name ?? string.Empty).Trim().ToUpperInvariant();
@@ -364,6 +420,19 @@ namespace TeklaDrawingAssistant.Core
 
             var name = (view.Name ?? string.Empty).Trim();
             return string.IsNullOrWhiteSpace(name) ? "unnamed generated view" : name;
+        }
+
+        private static Vector Normalize(Vector vector)
+        {
+            var length = Math.Sqrt(vector.X * vector.X + vector.Y * vector.Y + vector.Z * vector.Z);
+            return length < 0.000001
+                ? new Vector()
+                : new Vector(vector.X / length, vector.Y / length, vector.Z / length);
+        }
+
+        private static double Dot(Vector a, Vector b)
+        {
+            return a.X * b.X + a.Y * b.Y + a.Z * b.Z;
         }
 
         private sealed class LayoutBox
