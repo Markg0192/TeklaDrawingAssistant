@@ -15,7 +15,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,14">
             <TextBlock Text="Tekla Drawing Assistant" FontSize="24" FontWeight="SemiBold"/>
-            <TextBlock Text="Rule-based drawing analysis and hole dimensioning for Tekla Structures 2026."
+            <TextBlock Text="Rule-based drawing analysis and hole dimensioning for Tekla Structures 2023."
                        Margin="0,4,0,0" Foreground="DimGray"/>
         </StackPanel>
 
