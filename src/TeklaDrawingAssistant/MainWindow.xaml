@@ -15,7 +15,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,14">
             <TextBlock Text="Tekla Drawing Assistant" FontSize="24" FontWeight="SemiBold"/>
-            <TextBlock Text="View setup prototype for Tekla Structures 2023. Dimensioning is temporarily disabled."
+            <TextBlock Text="Fabrication view and fitting set-out prototype for Tekla Structures 2023."
                        Margin="0,4,0,0" Foreground="DimGray"/>
         </StackPanel>
 
@@ -42,12 +42,12 @@
                 </Grid.ColumnDefinitions>
 
                 <Button Grid.Column="0" x:Name="AnalyzeButton" Content="Analyze Drawing" Padding="18,8" Margin="0,0,10,0" Click="AnalyzeButton_Click"/>
-                <Button Grid.Column="1" x:Name="BuildViewsButton" Content="Build Views" Padding="18,8" Margin="0,0,18,0" Click="BuildViewsButton_Click"/>
+                <Button Grid.Column="1" x:Name="BuildViewsButton" Content="Build Views + Dims" Padding="18,8" Margin="0,0,18,0" Click="BuildViewsButton_Click"/>
 
                 <TextBlock Grid.Column="2"
                            VerticalAlignment="Center"
                            Foreground="DimGray"
-                           Text="Current prototype assumes one incoming base view and rebuilds only the required flange/end views."/>
+                           Text="Rebuilds required flange/end views, plans each fitting set-out, then dimensions it in the owning view."/>
             </Grid>
         </Border>
 
