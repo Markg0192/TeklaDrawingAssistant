@@ -1,5 +1,4 @@
 using System;
-using System.Globalization;
 using System.Windows;
 using TeklaDrawingAssistant.Core;
 using TeklaDrawingAssistant.Models;
@@ -65,12 +64,8 @@ namespace TeklaDrawingAssistant
         {
             RunSafely(() =>
             {
-                if (!double.TryParse(OffsetTextBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var offset) || offset <= 0)
-                    throw new InvalidOperationException("Dimension offset must be a positive number.");
-
                 var options = new DimensioningOptions
                 {
-                    DimensionOffset = offset,
                     DeleteExistingStraightDimensions = DeleteExistingCheckBox.IsChecked == true,
                     SaveDrawingAfterRun = SaveDrawingCheckBox.IsChecked == true
                 };
