@@ -20,7 +20,9 @@ namespace TeklaDrawingAssistant.Core
     ///   is dimensioned to the main-member centreline;
     /// - vertical hole set-out is projected LEFT from the LEFT-most holes and is
     ///   dimensioned from the TOP of the main-member flange;
-    /// - dimension lines are intentionally kept tight to the view.
+    /// - dimension lines are intentionally kept tight to the view;
+    /// - placing is forced to FREE so Tekla's automatic dimension placing cannot
+    ///   move the line away from the requested distance.
     ///
     /// This pass deletes any generic straight dimensions already created in A-A/B-B
     /// and replaces them with the controlled end-plate dimensions below.
@@ -29,7 +31,6 @@ namespace TeklaDrawingAssistant.Core
     {
         private const double CoordinateTolerance = 0.5;
         private const double EndZoneMinimum = 100.0;
-        private const double TightOffset = 4.0;
 
         private readonly Model _model;
 
@@ -108,7 +109,7 @@ namespace TeklaDrawingAssistant.Core
 
             messages?.Add(
                 "END DIM " + viewName + ": end plate " + Describe(endPlate) +
-                "; top-row holes -> member centreline above; left-most holes -> top flange on left; created " + created + " set(s).");
+                "; top-row holes -> member centreline above; left-most holes -> top flange on left; free placing; created " + created + " set(s).");
 
             return created;
         }
@@ -135,7 +136,11 @@ namespace TeklaDrawingAssistant.Core
             if (points.Count < 2)
                 return 0;
 
-            return CreateDimensionSet(view.View, points, new Vector(0.0, 1.0, 0.0), GetTightOffset(view));
+            return CreateDimensionSet(
+                view,
+                points,
+                new Vector(0.0, 1.0, 0.0),
+                DimensionLayout.GetEndPlateOffset(view));
         }
 
         private static int CreateVerticalHoleSetout(ViewAnalysis view, IList<Point> holes)
@@ -149,8 +154,6 @@ namespace TeklaDrawingAssistant.Core
             if (leftColumn.Count == 0)
                 return 0;
 
-            // The fabrication datum is the TOP surface/edge of the main-member flange,
-            // not the member centreline and not an end-plate edge.
             var topFlange = new Point(
                 view.MainPartBounds.MinX,
                 view.MainPartBounds.MaxY,
@@ -164,7 +167,11 @@ namespace TeklaDrawingAssistant.Core
             if (points.Count < 2)
                 return 0;
 
-            return CreateDimensionSet(view.View, points, new Vector(-1.0, 0.0, 0.0), GetTightOffset(view));
+            return CreateDimensionSet(
+                view,
+                points,
+                new Vector(-1.0, 0.0, 0.0),
+                DimensionLayout.GetEndPlateOffset(view));
         }
 
         private static List<Point> SelectExtremeByMeasuredCoordinate(
@@ -214,7 +221,7 @@ namespace TeklaDrawingAssistant.Core
         }
 
         private static int CreateDimensionSet(
-            View view,
+            ViewAnalysis view,
             IEnumerable<Point> points,
             Vector direction,
             double offset)
@@ -223,21 +230,18 @@ namespace TeklaDrawingAssistant.Core
             foreach (var point in points)
                 pointList.Add(point);
 
+            var attributes = new StraightDimensionSet.StraightDimensionSetAttributes(null, "standard");
+            attributes.Placing.Placing = DimensionSetBaseAttributes.Placings.Free;
+
             var handler = new StraightDimensionSetHandler();
-            var dimension = handler.CreateDimensionSet(view, pointList, direction, offset);
+            var dimension = handler.CreateDimensionSet(
+                view.View,
+                pointList,
+                direction,
+                offset,
+                attributes);
+
             return dimension == null ? 0 : 1;
-        }
-
-        private static double GetTightOffset(ViewAnalysis view)
-        {
-            if (view == null || view.View == null)
-                return TightOffset;
-
-            var shortSide = Math.Min(Math.Abs(view.View.Width), Math.Abs(view.View.Height));
-            if (shortSide < 0.001)
-                return TightOffset;
-
-            return Math.Max(3.5, Math.Min(5.0, shortSide * 0.055));
         }
 
         private List<Point> GetVisibleAttachedHolePoints(ModelPart part, ViewAnalysis view)
