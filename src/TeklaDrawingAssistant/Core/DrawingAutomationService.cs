@@ -10,21 +10,17 @@ namespace TeklaDrawingAssistant.Core
     {
         private readonly TeklaSession _session;
         private readonly DrawingAnalyzer _analyzer;
-        private readonly HoleDimensioner _dimensioner;
-        private readonly PartFaceDimensioner _partDimensioner;
         private readonly FabricationContextBuilder _contextBuilder;
         private readonly DimensionRuleEngine _ruleEngine;
-        private readonly FaceViewPlanner _faceViewPlanner;
+        private readonly ViewCreationPlanner _viewCreationPlanner;
 
         public DrawingAutomationService(TeklaSession session)
         {
             _session = session;
             _analyzer = new DrawingAnalyzer(session);
-            _dimensioner = new HoleDimensioner();
-            _partDimensioner = new PartFaceDimensioner(session.Model);
             _contextBuilder = new FabricationContextBuilder();
             _ruleEngine = new DimensionRuleEngine();
-            _faceViewPlanner = new FaceViewPlanner(session.Model);
+            _viewCreationPlanner = new ViewCreationPlanner(session.Model);
         }
 
         public DrawingAnalysisResult Analyze()
@@ -91,91 +87,32 @@ namespace TeklaDrawingAssistant.Core
             return sb.ToString();
         }
 
-        public string DimensionHoles(DimensioningOptions options)
+        public string BuildViewsOnly()
         {
             var log = new StringBuilder();
-            var viewMessages = new System.Collections.Generic.List<string>();
+            var messages = new System.Collections.Generic.List<string>();
 
             var analysis = _analyzer.Analyze();
             log.AppendLine($"Drawing: {analysis.Drawing.Mark} - {analysis.Drawing.Name}");
             log.AppendLine($"Starting views: {analysis.Views.Count}");
-
-            var createdViews = _faceViewPlanner.EnsureRequiredViews(analysis, viewMessages);
-            if (createdViews > 0)
-            {
-                // Re-read the drawing so the new Tekla views and their drawing objects are included.
-                analysis = _analyzer.Analyze();
-            }
-
-            var ownership = _faceViewPlanner.BuildOwnership(analysis);
-
-            log.AppendLine($"Face views created: {createdViews}");
-            foreach (var message in viewMessages)
-                log.AppendLine("  " + message);
-
             log.AppendLine();
-            log.AppendLine("FEATURE VIEW OWNERSHIP");
-            log.AppendLine(new string('-', 40));
-            foreach (var message in ownership.Messages)
-                log.AppendLine("  " + message);
-
-            log.AppendLine();
-            log.AppendLine("DIMENSIONING");
+            log.AppendLine("VIEW CREATION ONLY");
             log.AppendLine(new string('-', 40));
 
-            var totalHoleDimensions = 0;
-            var totalPartDimensions = 0;
+            var created = _viewCreationPlanner.RebuildRequiredViews(analysis, messages);
 
-            foreach (var view in analysis.Views)
-            {
-                if (!view.ContainsMainPart)
-                {
-                    log.AppendLine($"{view.Name}: skipped - main part not visible.");
-                    continue;
-                }
-
-                var ownedHoleGroups = ownership.GetHoleGroups(view.View);
-                var ownedParts = ownership.GetParts(view.View);
-
-                if (ownedHoleGroups.Count == 0 && ownedParts.Count == 0)
-                {
-                    log.AppendLine($"{view.Name}: no fabrication features owned by this face view.");
-                    continue;
-                }
-
-                // A custom/skew fitting-face view can still safely receive the plate's
-                // own face dimensions because the view was created normal to that face.
-                var partDimensions = _partDimensioner.Dimension(view, ownedParts, options);
-                totalPartDimensions += partDimensions;
-
-                var holeDimensions = 0;
-                if (view.Kind != ViewKind.Unknown)
-                {
-                    holeDimensions = _dimensioner.Dimension(view, options, ownedHoleGroups);
-                    totalHoleDimensions += holeDimensions;
-                }
-
-                if (view.Kind == ViewKind.Unknown && ownedHoleGroups.Count > 0)
-                {
-                    log.AppendLine(
-                        $"{view.Name}: custom fitting-face view, created {partDimensions} plate dimensions. " +
-                        $"{ownedHoleGroups.Count} hole group(s) deliberately left for the custom/skew hole rule.");
-                }
-                else
-                {
-                    log.AppendLine(
-                        $"{view.Name}: {view.Kind}, owns {ownedParts.Count} part(s) / {ownedHoleGroups.Count} hole group(s), " +
-                        $"created {partDimensions} plate dimensions and {holeDimensions} hole dimensions.");
-                }
-            }
+            foreach (var message in messages)
+                log.AppendLine("  " + message);
 
             analysis.Drawing.CommitChanges();
+            _session.DrawingHandler.SaveActiveDrawing();
 
-            if (options.SaveDrawingAfterRun)
-                _session.DrawingHandler.SaveActiveDrawing();
-
+            var finalAnalysis = _analyzer.Analyze();
             log.AppendLine();
-            log.AppendLine($"Created {totalPartDimensions} plate dimension sets and {totalHoleDimensions} hole dimension sets.");
+            log.AppendLine($"Created {created} required view(s).");
+            log.AppendLine($"Final views: {finalAnalysis.Views.Count}");
+            log.AppendLine("Dimension creation is currently disabled while view setup is being tuned.");
+
             return log.ToString();
         }
 
