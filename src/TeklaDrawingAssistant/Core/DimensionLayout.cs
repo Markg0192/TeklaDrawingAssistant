@@ -3,17 +3,17 @@ using TeklaDrawingAssistant.Models;
 namespace TeklaDrawingAssistant.Core
 {
     /// <summary>
-    /// StraightDimensionSetHandler.CreateDimensionSet expects Distance in PAPER millimetres.
-    /// Keep all first-lane dimensions deliberately tight to their steel; the final layout
-    /// pass handles collisions after all annotations exist.
+    /// StraightDimensionSetHandler.CreateDimensionSet distance is supplied in paper millimetres.
+    /// Keep automatic dimensions deliberately tight to the steel. Final collision/layout work
+    /// happens after all annotations have been created.
     /// </summary>
     public static class DimensionLayout
     {
-        private const double BasePaperOffset = 1.5;
-        private const double PartPaperOffset = 1.25;
-        private const double LanePaperSpacing = 1.5;
-        private const double EndPlatePaperOffset = 1.5;
-        private const double LocalFeaturePaperOffset = 1.25;
+        private const double BasePaperOffset = 0.75;
+        private const double PartPaperOffset = 0.625;
+        private const double LanePaperSpacing = 0.75;
+        private const double EndPlatePaperOffset = 0.75;
+        private const double LocalFeaturePaperOffset = 0.625;
 
         public static double GetBaseOffset(ViewAnalysis analysis)
         {
@@ -42,7 +42,7 @@ namespace TeklaDrawingAssistant.Core
 
         public static double ToViewDistance(ViewAnalysis analysis, double paperMillimetres)
         {
-            return paperMillimetres < 0.5 ? 0.5 : paperMillimetres;
+            return paperMillimetres < 0.25 ? 0.25 : paperMillimetres;
         }
     }
 }
