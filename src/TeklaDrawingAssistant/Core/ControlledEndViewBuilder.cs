@@ -19,16 +19,14 @@ namespace TeklaDrawingAssistant.Core
     /// <summary>
     /// Creates fabrication end sections from detected end plates.
     /// The section is cut on the outside plate face and looks back into the member.
-    /// Views are kept at the same scale as the retained base view and are placed as a
-    /// paired row below the corresponding member ends.
+    /// Views are kept at the same scale as the retained base view and are placed
+    /// directly beside the member end they describe.
     /// </summary>
     public sealed class ControlledEndViewBuilder
     {
-        private const double ViewGap = 14.0;
+        private const double ViewGap = 10.0;
         private const double SectionDepth = 1000.0;
         private const double SectionMargin = 50.0;
-        private const double EndViewHorizontalFraction = 0.28;
-        private const double EndViewVerticalGap = 18.0;
 
         private readonly Model _model;
 
@@ -56,8 +54,8 @@ namespace TeklaDrawingAssistant.Core
 
             messages?.Add("END ======================================================");
             messages?.Add("END strategy: detected end plate -> outside face -> standard Tekla section looking inward.");
-            messages?.Add("END layout: A-A and B-B below the base view, approximately under their member ends.");
-            messages?.Add("END view labels: bottom of view; section names A-A / B-B.");
+            messages?.Add("END layout: each end section is placed directly beside the member end it describes.");
+            messages?.Add("END section names: A-A / B-B. Section-mark appearance will be tidied later.");
 
             RemoveExistingSectionMarks(source.View);
 
@@ -194,8 +192,8 @@ namespace TeklaDrawingAssistant.Core
                 MarkName = letter
             };
 
-            // Use the retained base-view attributes so scale and normal representation stay
-            // aligned with the main fabrication view. Override only the label position.
+            // For now keep Tekla's normal section-mark appearance. View creation,
+            // direction and placement are the priority; mark styling comes later.
             var viewAttributes = source.View.Attributes ?? new DrawingView.ViewAttributes();
             viewAttributes.LabelPositionVertical = DrawingView.VerticalLabelPosition.Bottom;
 
@@ -255,7 +253,7 @@ namespace TeklaDrawingAssistant.Core
 
             messages?.Add(
                 "END " + letter + " " + attempt + ": SUCCESS - outside-in section kept; " +
-                visibleName + " placed below the " + (startEnd ? "start" : "finish") + " end of the base view.");
+                visibleName + " placed beside the " + (startEnd ? "start" : "finish") + " end of the base view.");
 
             return sectionView;
         }
@@ -276,9 +274,8 @@ namespace TeklaDrawingAssistant.Core
                 var bottom = new Point(cut, minY, 0.0);
                 var top = new Point(cut, maxY, 0.0);
 
-                // Tekla's actual section result on the test beam showed that our previous
-                // convention was reversed. For a horizontal member, reverse the cut-line
-                // direction so the low end looks toward +X and the high end looks toward -X.
+                // On the test beam this direction gives the fabrication view from
+                // outside the member back toward its centre.
                 if (targetOnLowSide)
                 {
                     start = top;
@@ -298,7 +295,6 @@ namespace TeklaDrawingAssistant.Core
             var left = new Point(minX, cut, 0.0);
             var right = new Point(maxX, cut, 0.0);
 
-            // Mirror the same correction for a vertical member.
             if (targetOnLowSide)
             {
                 start = left;
@@ -455,21 +451,14 @@ namespace TeklaDrawingAssistant.Core
             if (drawing == null || source == null || section == null)
                 return;
 
-            var xOffset = Math.Max(45.0, source.Width * EndViewHorizontalFraction);
+            // End sections belong beside the end they describe and on the same horizontal
+            // centreline as the base view. This deliberately ignores the top/bottom flange
+            // views: those sit above/below, while A-A and B-B sit left/right.
+            var horizontalOffset = source.Width * 0.5 + section.Width * 0.5 + ViewGap;
             var desired = new Point(
-                source.Origin.X + (startEnd ? -xOffset : xOffset),
-                source.Origin.Y - source.Height * 0.5 - section.Height * 0.5 - EndViewVerticalGap,
+                source.Origin.X + (startEnd ? -horizontalOffset : horizontalOffset),
+                source.Origin.Y,
                 0.0);
-
-            // Keep A-A and B-B in the requested lower row, but if a flange view already
-            // occupies that exact area, step the end view down until it is clear.
-            var occupied = GetOtherViews(drawing, source, section);
-            var attempts = 0;
-            while (occupied.Any(view => Overlaps(view, section, desired, ViewGap)) && attempts < 4)
-            {
-                desired.Y -= section.Height + ViewGap;
-                attempts++;
-            }
 
             var sheet = drawing.GetSheet();
             if (sheet != null && sheet.Width > 0.0 && sheet.Height > 0.0)
@@ -483,41 +472,14 @@ namespace TeklaDrawingAssistant.Core
             section.Origin = desired;
         }
 
-        private static List<DrawingView> GetOtherViews(Drawing drawing, DrawingView source, DrawingView section)
-        {
-            var result = new List<DrawingView>();
-            var views = drawing.GetSheet().GetAllViews();
-            while (views.MoveNext())
-            {
-                var view = views.Current as DrawingView;
-                if (view == null || ReferenceEquals(view, source) || ReferenceEquals(view, section))
-                    continue;
-
-                result.Add(view);
-            }
-
-            return result;
-        }
-
-        private static bool Overlaps(DrawingView existing, DrawingView moving, Point movingOrigin, double gap)
-        {
-            if (existing == null || moving == null || movingOrigin == null)
-                return false;
-
-            var dx = Math.Abs(existing.Origin.X - movingOrigin.X);
-            var dy = Math.Abs(existing.Origin.Y - movingOrigin.Y);
-            var requiredX = existing.Width * 0.5 + moving.Width * 0.5 + gap;
-            var requiredY = existing.Height * 0.5 + moving.Height * 0.5 + gap;
-
-            return dx < requiredX && dy < requiredY;
-        }
-
         private static Point GetInitialInsertionPoint(DrawingView source, bool startEnd)
         {
-            var xOffset = Math.Max(45.0, source.Width * EndViewHorizontalFraction);
+            // The final position is recalculated after creation when the section width is known.
+            // Start Tekla off at the correct member end rather than in a lower-row position.
+            var sideOffset = source.Width * 0.5 + 30.0;
             return new Point(
-                source.Origin.X + (startEnd ? -xOffset : xOffset),
-                source.Origin.Y - source.Height * 0.5 - 40.0,
+                source.Origin.X + (startEnd ? -sideOffset : sideOffset),
+                source.Origin.Y,
                 0.0);
         }
 
