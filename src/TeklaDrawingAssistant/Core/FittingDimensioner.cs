@@ -13,24 +13,22 @@ using ModelPart = Tekla.Structures.Model.Part;
 namespace TeklaDrawingAssistant.Core
 {
     /// <summary>
-    /// Turns the fitting set-out plan into fabrication dimensions.
+    /// Generic fitting set-out dimensioner for non-end fittings.
+    /// End plates are deliberately left to EndPlateDimensioner.
     ///
-    /// Fabrication rules in this pass:
-    /// - Dimensions stay close to the feature.
-    /// - Horizontal dimensions use ABOVE first; vertical dimensions use LEFT first.
-    /// - Hole-based chains are placed outside geometry/set-out chains where both exist.
-    /// - Bottom-flange longitudinal set-out is projected BELOW the member to avoid
-    ///   running dimension lines through the member.
-    /// - End-plate horizontal set-out uses the member centreline.
-    /// - End-plate vertical set-out uses the top flange edge as the primary datum.
-    /// - Top/bottom attachments use the relevant flange edge for vertical set-out.
-    /// - Longitudinal set-out includes both member ends, giving a closing dimension.
-    /// - Similar fittings on the same fabrication face share one dimension chain.
+    /// Rules in this pass:
+    /// - use the view selected by the fitting set-out planner;
+    /// - prefer visible holes to fitting edges;
+    /// - group like fittings on the same fabrication face into one chain;
+    /// - top-flange longitudinal set-out projects above;
+    /// - bottom-flange longitudinal set-out projects below;
+    /// - longitudinal chains include both member ends for a closing dimension;
+    /// - dimensions use FREE placing so Tekla cannot auto-move them to another side;
+    /// - offsets are scale-aware and intentionally tight.
     /// </summary>
     public sealed class FittingDimensioner
     {
         private const double CoordinateTolerance = 0.5;
-        private const int PrimaryLaneCapacity = 6;
         private const double EndZoneMinimum = 100.0;
         private const double AttachmentTolerance = 45.0;
 
@@ -59,30 +57,26 @@ namespace TeklaDrawingAssistant.Core
             var created = 0;
 
             messages?.Add("DIMENSIONING ==============================================");
-            messages?.Add("DIM policy: dimensions sit close to the feature; ABOVE/LEFT are preferred before BELOW/RIGHT.");
-            messages?.Add("DIM policy: hole-centre chains are kept outside fitting-geometry chains.");
-            messages?.Add("DIM policy: end plates use member centreline horizontally and flange edge vertically.");
-            messages?.Add("DIM policy: bottom-flange longitudinal set-out projects below the member and includes a closing dimension to the far end.");
+            messages?.Add("DIM policy: FREE placing is forced so explicit side/distance rules win over Tekla automatic placing.");
+            messages?.Add("DIM policy: bottom-flange longitudinal set-out is BELOW; top-flange set-out is ABOVE.");
+            messages?.Add("DIM policy: longitudinal chains include both member ends for a closing dimension.");
 
-            var groups = tasks
+            var groupedTasks = tasks
                 .GroupBy(task => task.GroupKey, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.ToList())
                 .OrderBy(group => GetViewKey(group[0].Owner))
-                .ThenBy(group => IsHorizontal(group[0].Axis2D) ? 0 : 1)
-                .ThenBy(group => group.Any(task => task.UsesHoles) ? 1 : 0)
-                .ThenBy(group => group[0].Family)
                 .ThenBy(group => group[0].Axis)
+                .ThenBy(group => group[0].Family)
                 .ToList();
 
-            foreach (var items in groups)
+            foreach (var group in groupedTasks)
             {
-                var first = items[0];
-                var points = items.SelectMany(item => item.TargetPoints).ToList();
-                var partBounds = items
+                var first = group[0];
+                var targetPoints = group.SelectMany(item => item.TargetPoints).ToList();
+                var fittingBounds = group
                     .Where(item => item.PartBounds != null)
                     .Select(item => item.PartBounds)
                     .ToList();
-                var usesHoles = items.Any(item => item.UsesHoles);
 
                 var count = CreateGroupedDimension(
                     analysis,
@@ -90,26 +84,24 @@ namespace TeklaDrawingAssistant.Core
                     first.Axis,
                     first.Axis2D,
                     first.Family,
-                    points,
-                    partBounds,
-                    usesHoles,
+                    targetPoints,
+                    fittingBounds,
                     lanes);
 
                 created += count;
 
-                var partIds = string.Join(",", items.Select(item => item.PartId).Distinct().OrderBy(id => id));
+                var partIds = string.Join(",", group.Select(item => item.PartId).Distinct().OrderBy(id => id));
                 messages?.Add(
                     "DIM " + FriendlyViewName(first.Owner) +
                     ": " + first.Family +
                     " / " + first.Axis +
                     " / parts [" + partIds + "]" +
-                    " / " + (usesHoles ? "holes" : "geometry") +
-                    (count > 0 ? " -> one grouped chain created." : " -> skipped (no measurable separation)."));
+                    (count > 0 ? " -> grouped chain created." : " -> skipped."));
             }
 
             analysis.Drawing.CommitChanges();
+            messages?.Add("DIM total generic straight dimension sets created: " + created + ".");
             messages?.Add("DIMENSIONING ==============================================");
-            messages?.Add("DIM total straight dimension sets created: " + created + ".");
             return created;
         }
 
@@ -132,9 +124,14 @@ namespace TeklaDrawingAssistant.Core
 
                 var family = ClassifyFamily(analysis.MainPart, part);
 
+                // End plates are rebuilt later by EndPlateDimensioner using the dedicated
+                // centreline/top-flange convention. Do not create generic dimensions here.
+                if (family == FittingFamily.EndA || family == FittingFamily.EndB)
+                    continue;
+
                 foreach (var requirement in fitting.Requirements.OrderBy(item => item.Axis))
                 {
-                    var owner = ResolveViewForPart(analysis, requirement, part, family);
+                    var owner = ResolveViewForPart(analysis, requirement, part);
                     if (owner == null || owner.View == null || owner.MainPartBounds == null)
                     {
                         messages?.Add("DIM part " + fitting.PartId + " " + requirement.Axis +
@@ -154,12 +151,11 @@ namespace TeklaDrawingAssistant.Core
                     var partBounds = _geometryReader.GetPartBounds(owner.View, new Identifier(fitting.PartId));
                     var holeGroups = GetVisibleAttachedHoleGroups(part, owner);
                     var points = holeGroups.SelectMany(group => group.Points).ToList();
-                    var usesHoles = points.Count > 0;
-                    var targetDescription = usesHoles
+                    var targetDescription = points.Count > 0
                         ? "holes " + string.Join(",", holeGroups.Select(group => group.ModelIdentifierId).Distinct())
                         : "fitting geometry";
 
-                    if (!usesHoles && partBounds != null)
+                    if (points.Count == 0 && partBounds != null)
                         points.AddRange(GetCorners(partBounds));
 
                     if (points.Count == 0)
@@ -182,7 +178,6 @@ namespace TeklaDrawingAssistant.Core
                         Family = family,
                         PartBounds = partBounds,
                         TargetPoints = points,
-                        UsesHoles = usesHoles,
                         GroupKey = GetViewKey(owner) + "|" + requirement.Axis + "|" + familyKey
                     });
 
@@ -203,7 +198,6 @@ namespace TeklaDrawingAssistant.Core
             FittingFamily family,
             IList<Point> targetPoints,
             IList<ViewBounds> fittingBounds,
-            bool usesHoles,
             IDictionary<string, int> lanes)
         {
             if (view == null || view.View == null || view.MainPartBounds == null ||
@@ -214,51 +208,103 @@ namespace TeklaDrawingAssistant.Core
             if (uniqueTargets.Count == 0)
                 return 0;
 
-            var horizontalMeasurement = IsHorizontal(axis);
-            var lane = AllocateLane(view, horizontalMeasurement, memberAxis, family, lanes);
+            var side = ChooseSide(view, memberAxis, axis, family, fittingBounds);
+            var laneIndex = AllocateLane(view, side, lanes);
 
-            var dimensionPoints = BuildDimensionPoints(
-                analysis.MainPart,
+            var points = BuildDimensionPoints(
                 view,
                 memberAxis,
                 axis,
                 family,
                 uniqueTargets,
-                fittingBounds,
-                lane.Side);
+                side);
 
-            dimensionPoints = UniqueAlongAxis(dimensionPoints, axis, CoordinateTolerance)
+            points = UniqueAlongAxis(points, axis, CoordinateTolerance)
                 .OrderBy(point => Dot(point, axis))
                 .ToList();
 
-            if (dimensionPoints.Count < 2)
+            if (points.Count < 2)
                 return 0;
 
-            var firstValue = Dot(dimensionPoints.First(), axis);
-            var lastValue = Dot(dimensionPoints.Last(), axis);
-            if (Math.Abs(lastValue - firstValue) <= CoordinateTolerance)
+            if (Math.Abs(Dot(points.Last(), axis) - Dot(points.First(), axis)) <= CoordinateTolerance)
                 return 0;
 
-            var direction = GetDimensionDirection(axis, lane.Side);
-            var offset = DimensionLayout.GetBaseOffset(view) + lane.LaneIndex * DimensionLayout.GetLaneSpacing(view);
+            var pointList = new PointList();
+            foreach (var point in points)
+                pointList.Add(point);
 
-            var points = new PointList();
-            foreach (var point in dimensionPoints)
-                points.Add(point);
+            var offset = DimensionLayout.GetBaseOffset(view) +
+                         laneIndex * DimensionLayout.GetLaneSpacing(view);
+
+            var attributes = new StraightDimensionSet.StraightDimensionSetAttributes(null, "standard");
+            attributes.Placing.Placing = DimensionSetBaseAttributes.Placings.Free;
 
             var handler = new StraightDimensionSetHandler();
-            var dimension = handler.CreateDimensionSet(view.View, points, direction, offset);
+            var dimension = handler.CreateDimensionSet(
+                view.View,
+                pointList,
+                GetDimensionDirection(axis, side),
+                offset,
+                attributes);
+
             return dimension == null ? 0 : 1;
         }
 
-        private List<Point> BuildDimensionPoints(
-            ModelPart mainPart,
+        private static DimensionSide ChooseSide(
+            ViewAnalysis view,
+            FittingSetoutAxis memberAxis,
+            Axis2D axis,
+            FittingFamily family,
+            IList<ViewBounds> fittingBounds)
+        {
+            var horizontalMeasurement = IsHorizontal(axis);
+
+            if (horizontalMeasurement)
+            {
+                if (memberAxis == FittingSetoutAxis.MemberX)
+                {
+                    if (family == FittingFamily.BottomFlange)
+                        return DimensionSide.Below;
+
+                    if (family == FittingFamily.TopFlange)
+                        return DimensionSide.Above;
+
+                    // Extra geometric guard: if classification is imperfect but all of
+                    // the projected fittings clearly sit under the member, keep the
+                    // longitudinal dimension below rather than running it through steel.
+                    if (fittingBounds != null && fittingBounds.Count > 0)
+                    {
+                        var averageY = fittingBounds.Average(bounds => bounds.CentreY);
+                        if (averageY < view.MainPartBounds.CentreY)
+                        {
+                            var bottomDistance = fittingBounds.Min(bounds =>
+                                Math.Min(
+                                    Math.Abs(bounds.MinY - view.MainPartBounds.MinY),
+                                    Math.Abs(bounds.MaxY - view.MainPartBounds.MinY)));
+
+                            var topDistance = fittingBounds.Min(bounds =>
+                                Math.Min(
+                                    Math.Abs(bounds.MinY - view.MainPartBounds.MaxY),
+                                    Math.Abs(bounds.MaxY - view.MainPartBounds.MaxY)));
+
+                            if (bottomDistance <= topDistance)
+                                return DimensionSide.Below;
+                        }
+                    }
+                }
+
+                return DimensionSide.Above;
+            }
+
+            return DimensionSide.Left;
+        }
+
+        private static List<Point> BuildDimensionPoints(
             ViewAnalysis view,
             FittingSetoutAxis memberAxis,
             Axis2D axis,
             FittingFamily family,
             IList<Point> targets,
-            IList<ViewBounds> fittingBounds,
             DimensionSide side)
         {
             var result = new List<Point>();
@@ -266,50 +312,26 @@ namespace TeklaDrawingAssistant.Core
 
             if (memberAxis == FittingSetoutAxis.MemberX)
             {
-                // Any longitudinal set-out receives both main-member ends. This gives
-                // the closing dimension to the far end as standard fabrication practice.
                 result.Add(GetMainEndPoint(main, axis, side, true));
                 result.AddRange(targets);
                 result.Add(GetMainEndPoint(main, axis, side, false));
                 return result;
             }
 
-            if (IsEndFamily(family))
-            {
-                if (memberAxis == FittingSetoutAxis.MemberY)
-                {
-                    // End-plate horizontal dimensions originate at the main-member centreline.
-                    result.Add(GetCentrelineDatum(main, axis, side));
-                    result.AddRange(targets);
-                    return result;
-                }
-
-                if (memberAxis == FittingSetoutAxis.MemberZ)
-                {
-                    // Use the top flange as the default vertical fabrication datum in
-                    // an end view, matching the usual 90 / pitch / pitch style chain.
-                    result.Add(GetTopFlangeDatum(main, side));
-                    result.AddRange(targets);
-                    return result;
-                }
-            }
-
             if (memberAxis == FittingSetoutAxis.MemberZ && family == FittingFamily.BottomFlange)
             {
-                result.Add(GetBottomFlangeDatum(main, side));
+                result.Add(GetFlangeDatum(main, false, side));
                 result.AddRange(targets);
                 return result;
             }
 
             if (memberAxis == FittingSetoutAxis.MemberZ && family == FittingFamily.TopFlange)
             {
-                result.Add(GetTopFlangeDatum(main, side));
+                result.Add(GetFlangeDatum(main, true, side));
                 result.AddRange(targets);
                 return result;
             }
 
-            // Generic fallback: locate from the nearest real main-member edge on the
-            // dimensioned axis. Never invent a free-floating projected datum.
             result.Add(GetNearestMainEdgeDatum(main, axis, targets, side));
             result.AddRange(targets);
             return result;
@@ -330,28 +352,10 @@ namespace TeklaDrawingAssistant.Core
                 : sideCorners.OrderByDescending(point => Dot(point, axis)).First();
         }
 
-        private static Point GetCentrelineDatum(ViewBounds bounds, Axis2D axis, DimensionSide side)
-        {
-            if (IsHorizontal(axis))
-            {
-                var y = side == DimensionSide.Below ? bounds.MinY : bounds.MaxY;
-                return new Point(bounds.CentreX, y, 0.0);
-            }
-
-            var x = side == DimensionSide.Right ? bounds.MaxX : bounds.MinX;
-            return new Point(x, bounds.CentreY, 0.0);
-        }
-
-        private static Point GetTopFlangeDatum(ViewBounds bounds, DimensionSide side)
+        private static Point GetFlangeDatum(ViewBounds bounds, bool top, DimensionSide side)
         {
             var x = side == DimensionSide.Right ? bounds.MaxX : bounds.MinX;
-            return new Point(x, bounds.MaxY, 0.0);
-        }
-
-        private static Point GetBottomFlangeDatum(ViewBounds bounds, DimensionSide side)
-        {
-            var x = side == DimensionSide.Right ? bounds.MaxX : bounds.MinX;
-            return new Point(x, bounds.MinY, 0.0);
+            return new Point(x, top ? bounds.MaxY : bounds.MinY, 0.0);
         }
 
         private static Point GetNearestMainEdgeDatum(
@@ -361,16 +365,13 @@ namespace TeklaDrawingAssistant.Core
             DimensionSide side)
         {
             var average = targets.Average(point => Dot(point, axis));
-            var sideCorners = GetCornersOnSide(bounds, side);
-            if (sideCorners.Count == 0)
-                sideCorners = GetCorners(bounds);
+            var candidates = GetCornersOnSide(bounds, side);
+            if (candidates.Count == 0)
+                candidates = GetCorners(bounds);
 
-            var minimum = sideCorners.OrderBy(point => Dot(point, axis)).First();
-            var maximum = sideCorners.OrderByDescending(point => Dot(point, axis)).First();
-
-            return Math.Abs(average - Dot(minimum, axis)) <= Math.Abs(average - Dot(maximum, axis))
-                ? minimum
-                : maximum;
+            return candidates
+                .OrderBy(point => Math.Abs(average - Dot(point, axis)))
+                .First();
         }
 
         private static List<Point> GetCornersOnSide(ViewBounds bounds, DimensionSide side)
@@ -434,86 +435,36 @@ namespace TeklaDrawingAssistant.Core
             return new Vector(perpX, perpY, 0.0);
         }
 
-        private static LanePlacement AllocateLane(
+        private static int AllocateLane(
             ViewAnalysis view,
-            bool horizontalMeasurement,
-            FittingSetoutAxis axis,
-            FittingFamily family,
+            DimensionSide side,
             IDictionary<string, int> lanes)
         {
-            var preferred = horizontalMeasurement ? DimensionSide.Above : DimensionSide.Left;
+            var key = GetViewKey(view) + "|" + side;
+            int count;
+            if (!lanes.TryGetValue(key, out count))
+                count = 0;
 
-            // Bottom-flange longitudinal set-out belongs below the member. Projecting
-            // upward runs extension lines through the main member and is harder to read.
-            if (horizontalMeasurement && axis == FittingSetoutAxis.MemberX && family == FittingFamily.BottomFlange)
-                preferred = DimensionSide.Below;
-
-            var alternate = GetOpposite(preferred);
-            var preferredKey = GetViewKey(view) + "|" + preferred;
-            int preferredCount;
-            if (!lanes.TryGetValue(preferredKey, out preferredCount))
-                preferredCount = 0;
-
-            if (preferredCount < PrimaryLaneCapacity)
-            {
-                lanes[preferredKey] = preferredCount + 1;
-                return new LanePlacement(preferred, preferredCount);
-            }
-
-            var alternateKey = GetViewKey(view) + "|" + alternate;
-            int alternateCount;
-            if (!lanes.TryGetValue(alternateKey, out alternateCount))
-                alternateCount = 0;
-            lanes[alternateKey] = alternateCount + 1;
-            return new LanePlacement(alternate, alternateCount);
-        }
-
-        private static DimensionSide GetOpposite(DimensionSide side)
-        {
-            switch (side)
-            {
-                case DimensionSide.Above: return DimensionSide.Below;
-                case DimensionSide.Below: return DimensionSide.Above;
-                case DimensionSide.Left: return DimensionSide.Right;
-                case DimensionSide.Right: return DimensionSide.Left;
-                default: return DimensionSide.Above;
-            }
+            lanes[key] = count + 1;
+            return count;
         }
 
         private ViewAnalysis ResolveViewForPart(
             DrawingAnalysisResult analysis,
             FittingSetoutRequirement requirement,
-            ModelPart part,
-            FittingFamily family)
+            ModelPart part)
         {
-            if (family == FittingFamily.EndA)
-            {
-                var a = analysis.Views.FirstOrDefault(view => NameEquals(view, "A-A"));
-                if (a != null && IsPartVisible(a, part.Identifier.ID))
-                    return a;
-            }
-
-            if (family == FittingFamily.EndB)
-            {
-                var b = analysis.Views.FirstOrDefault(view => NameEquals(view, "B-B"));
-                if (b != null && IsPartVisible(b, part.Identifier.ID))
-                    return b;
-            }
-
             var resolved = ResolveView(analysis, requirement.ViewName, requirement.ViewKind);
             if (resolved != null && IsPartVisible(resolved, part.Identifier.ID))
                 return resolved;
 
-            if (requirement.ViewKind == ViewKind.End ||
-                (requirement.ViewName ?? string.Empty).IndexOf("END", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                var visibleEnd = analysis.Views.FirstOrDefault(view =>
-                    view.Kind == ViewKind.End && IsPartVisible(view, part.Identifier.ID));
-                if (visibleEnd != null)
-                    return visibleEnd;
-            }
+            var visible = analysis.Views
+                .Where(view => view.View != null && IsPartVisible(view, part.Identifier.ID))
+                .OrderBy(view => view.Kind == requirement.ViewKind ? 0 : 1)
+                .ThenBy(view => IsGenerated(view) ? 1 : 0)
+                .FirstOrDefault();
 
-            return resolved;
+            return visible ?? resolved;
         }
 
         private FittingFamily ClassifyFamily(ModelPart mainPart, ModelPart part)
@@ -548,12 +499,14 @@ namespace TeklaDrawingAssistant.Core
                 var bottomDistance = Math.Min(
                     Math.Abs(fitting.MinimumPoint.Z - main.MinimumPoint.Z),
                     Math.Abs(fitting.MaximumPoint.Z - main.MinimumPoint.Z));
+
                 var topDistance = Math.Min(
                     Math.Abs(fitting.MinimumPoint.Z - main.MaximumPoint.Z),
                     Math.Abs(fitting.MaximumPoint.Z - main.MaximumPoint.Z));
 
                 if (bottomDistance <= AttachmentTolerance && bottomDistance <= topDistance)
                     return FittingFamily.BottomFlange;
+
                 if (topDistance <= AttachmentTolerance)
                     return FittingFamily.TopFlange;
 
@@ -574,7 +527,8 @@ namespace TeklaDrawingAssistant.Core
             while (parts.MoveNext())
             {
                 var drawingPart = parts.Current as DrawingPart;
-                if (drawingPart != null && drawingPart.ModelIdentifier != null &&
+                if (drawingPart != null &&
+                    drawingPart.ModelIdentifier != null &&
                     drawingPart.ModelIdentifier.ID == partId)
                     return true;
             }
@@ -586,6 +540,7 @@ namespace TeklaDrawingAssistant.Core
         {
             var attached = new HashSet<int>();
             var bolts = part.GetBolts();
+
             while (bolts.MoveNext())
             {
                 var bolt = bolts.Current as BoltGroup;
@@ -598,72 +553,6 @@ namespace TeklaDrawingAssistant.Core
                 .ToList();
         }
 
-        private static List<Point> GetCorners(ViewBounds bounds)
-        {
-            return new List<Point>
-            {
-                new Point(bounds.MinX, bounds.MinY, 0.0),
-                new Point(bounds.MinX, bounds.MaxY, 0.0),
-                new Point(bounds.MaxX, bounds.MinY, 0.0),
-                new Point(bounds.MaxX, bounds.MaxY, 0.0)
-            };
-        }
-
-        private static bool IsEndFamily(FittingFamily family)
-        {
-            return family == FittingFamily.EndA || family == FittingFamily.EndB;
-        }
-
-        private static bool IsHorizontal(Axis2D axis)
-        {
-            return Math.Abs(axis.X) >= Math.Abs(axis.Y);
-        }
-
-        private static List<Point> UniqueAlongAxis(IEnumerable<Point> points, Axis2D axis, double tolerance)
-        {
-            var result = new List<Point>();
-            foreach (var point in points.OrderBy(point => Dot(point, axis)))
-            {
-                var coordinate = Dot(point, axis);
-                if (result.All(existing => Math.Abs(Dot(existing, axis) - coordinate) > tolerance))
-                    result.Add(point);
-            }
-            return result;
-        }
-
-        private static double Dot(Point point, Axis2D axis)
-        {
-            return point.X * axis.X + point.Y * axis.Y;
-        }
-
-        private static Axis2D ProjectAxis(Vector globalAxis, CoordinateSystem viewCs)
-        {
-            var axis = Normalize(globalAxis);
-            var x = Normalize(new Vector(viewCs.AxisX));
-            var y = Normalize(new Vector(viewCs.AxisY));
-            return new Axis2D(Dot(axis, x), Dot(axis, y));
-        }
-
-        private static MainAxes GetMainAxes(ModelPart mainPart)
-        {
-            var cs = mainPart.GetCoordinateSystem();
-            var x = Normalize(new Vector(cs.AxisX));
-            var y = Normalize(new Vector(cs.AxisY));
-            var z = Normalize(GeometryMath.Cross(x, y));
-            return new MainAxes(x, y, z);
-        }
-
-        private static Vector GetAxis(MainAxes axes, FittingSetoutAxis axis)
-        {
-            switch (axis)
-            {
-                case FittingSetoutAxis.MemberX: return axes.X;
-                case FittingSetoutAxis.MemberY: return axes.Y;
-                case FittingSetoutAxis.MemberZ: return axes.Z;
-                default: return axes.X;
-            }
-        }
-
         private static ViewAnalysis ResolveView(
             DrawingAnalysisResult analysis,
             string friendlyName,
@@ -673,12 +562,16 @@ namespace TeklaDrawingAssistant.Core
                 return null;
 
             var name = (friendlyName ?? string.Empty).Trim();
+
             if (name.Equals("TOP flange", StringComparison.OrdinalIgnoreCase))
                 return analysis.Views.FirstOrDefault(view => NameEquals(view, "TDA_TOP"));
+
             if (name.Equals("BOTTOM flange", StringComparison.OrdinalIgnoreCase))
                 return analysis.Views.FirstOrDefault(view => NameEquals(view, "TDA_BOTTOM"));
+
             if (name.StartsWith("A-A", StringComparison.OrdinalIgnoreCase))
                 return analysis.Views.FirstOrDefault(view => NameEquals(view, "A-A"));
+
             if (name.StartsWith("B-B", StringComparison.OrdinalIgnoreCase))
                 return analysis.Views.FirstOrDefault(view => NameEquals(view, "B-B"));
 
@@ -691,8 +584,11 @@ namespace TeklaDrawingAssistant.Core
             }
 
             var exact = analysis.Views.FirstOrDefault(view =>
-                string.Equals(view.View == null ? string.Empty : view.View.Name ?? string.Empty,
-                    name, StringComparison.OrdinalIgnoreCase));
+                string.Equals(
+                    view.View == null ? string.Empty : view.View.Name ?? string.Empty,
+                    name,
+                    StringComparison.OrdinalIgnoreCase));
+
             if (exact != null)
                 return exact;
 
@@ -713,6 +609,7 @@ namespace TeklaDrawingAssistant.Core
             var name = view == null || view.View == null
                 ? string.Empty
                 : (view.View.Name ?? string.Empty).Trim().ToUpperInvariant();
+
             return name.StartsWith("TDA_") || name == "A-A" || name == "B-B";
         }
 
@@ -741,30 +638,83 @@ namespace TeklaDrawingAssistant.Core
         {
             if (view == null || view.View == null)
                 return "<none>";
+
             var name = (view.View.Name ?? string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(name))
-                return name;
-            return FriendlyViewName(view);
+            return string.IsNullOrWhiteSpace(name) ? FriendlyViewName(view) : name;
         }
 
-        private static void DeleteExistingStraightDimensions(DrawingAnalysisResult analysis)
+        private static List<Point> GetCorners(ViewBounds bounds)
         {
-            foreach (var view in analysis.Views)
+            return new List<Point>
             {
-                if (view.View == null)
-                    continue;
+                new Point(bounds.MinX, bounds.MinY, 0.0),
+                new Point(bounds.MinX, bounds.MaxY, 0.0),
+                new Point(bounds.MaxX, bounds.MinY, 0.0),
+                new Point(bounds.MaxX, bounds.MaxY, 0.0)
+            };
+        }
 
-                var dimensions = view.View.GetObjects(new[] { typeof(StraightDimensionSet) });
-                var delete = new List<StraightDimensionSet>();
-                while (dimensions.MoveNext())
-                {
-                    var dimension = dimensions.Current as StraightDimensionSet;
-                    if (dimension != null)
-                        delete.Add(dimension);
-                }
+        private static bool IsHorizontal(Axis2D axis)
+        {
+            return Math.Abs(axis.X) >= Math.Abs(axis.Y);
+        }
 
-                foreach (var dimension in delete)
-                    dimension.Delete();
+        private static List<Point> UniqueAlongAxis(
+            IEnumerable<Point> points,
+            Axis2D axis,
+            double tolerance)
+        {
+            var result = new List<Point>();
+
+            foreach (var point in points.OrderBy(point => Dot(point, axis)))
+            {
+                var coordinate = Dot(point, axis);
+                if (result.All(existing =>
+                    Math.Abs(Dot(existing, axis) - coordinate) > tolerance))
+                    result.Add(point);
+            }
+
+            return result;
+        }
+
+        private static double Dot(Point point, Axis2D axis)
+        {
+            return point.X * axis.X + point.Y * axis.Y;
+        }
+
+        private static Axis2D ProjectAxis(Vector globalAxis, CoordinateSystem viewCs)
+        {
+            var axis = Normalize(globalAxis);
+            var x = Normalize(new Vector(viewCs.AxisX));
+            var y = Normalize(new Vector(viewCs.AxisY));
+            return new Axis2D(Dot(axis, x), Dot(axis, y));
+        }
+
+        private static MainAxes GetMainAxes(ModelPart mainPart)
+        {
+            var cs = mainPart.GetCoordinateSystem();
+            var x = Normalize(new Vector(cs.AxisX));
+            var y = Normalize(new Vector(cs.AxisY));
+            var z = Normalize(Cross(x, y));
+            return new MainAxes(x, y, z);
+        }
+
+        private static Vector Cross(Vector a, Vector b)
+        {
+            return new Vector(
+                a.Y * b.Z - a.Z * b.Y,
+                a.Z * b.X - a.X * b.Z,
+                a.X * b.Y - a.Y * b.X);
+        }
+
+        private static Vector GetAxis(MainAxes axes, FittingSetoutAxis axis)
+        {
+            switch (axis)
+            {
+                case FittingSetoutAxis.MemberX: return axes.X;
+                case FittingSetoutAxis.MemberY: return axes.Y;
+                case FittingSetoutAxis.MemberZ: return axes.Z;
+                default: return axes.X;
             }
         }
 
@@ -779,6 +729,28 @@ namespace TeklaDrawingAssistant.Core
         private static double Dot(Vector a, Vector b)
         {
             return a.X * b.X + a.Y * b.Y + a.Z * b.Z;
+        }
+
+        private static void DeleteExistingStraightDimensions(DrawingAnalysisResult analysis)
+        {
+            foreach (var view in analysis.Views)
+            {
+                if (view.View == null)
+                    continue;
+
+                var dimensions = view.View.GetObjects(new[] { typeof(StraightDimensionSet) });
+                var delete = new List<StraightDimensionSet>();
+
+                while (dimensions.MoveNext())
+                {
+                    var dimension = dimensions.Current as StraightDimensionSet;
+                    if (dimension != null)
+                        delete.Add(dimension);
+                }
+
+                foreach (var dimension in delete)
+                    dimension.Delete();
+            }
         }
 
         private enum FittingFamily
@@ -808,20 +780,7 @@ namespace TeklaDrawingAssistant.Core
             public FittingFamily Family { get; set; }
             public ViewBounds PartBounds { get; set; }
             public List<Point> TargetPoints { get; set; }
-            public bool UsesHoles { get; set; }
             public string GroupKey { get; set; }
-        }
-
-        private sealed class LanePlacement
-        {
-            public LanePlacement(DimensionSide side, int laneIndex)
-            {
-                Side = side;
-                LaneIndex = laneIndex;
-            }
-
-            public DimensionSide Side { get; }
-            public int LaneIndex { get; }
         }
 
         private sealed class MainAxes
