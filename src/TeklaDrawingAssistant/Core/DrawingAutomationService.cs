@@ -17,6 +17,7 @@ namespace TeklaDrawingAssistant.Core
         private readonly GeneratedViewPostProcessor _viewPostProcessor;
         private readonly FittingSetoutPlanner _setoutPlanner;
         private readonly FittingDimensioner _fittingDimensioner;
+        private readonly BottomFlangeFittingDimensioner _bottomFlangeFittingDimensioner;
         private readonly MainPartHoleDimensioner _mainPartHoleDimensioner;
         private readonly EndPlateDimensioner _endPlateDimensioner;
 
@@ -31,6 +32,7 @@ namespace TeklaDrawingAssistant.Core
             _viewPostProcessor = new GeneratedViewPostProcessor();
             _setoutPlanner = new FittingSetoutPlanner(session.Model);
             _fittingDimensioner = new FittingDimensioner(session.Model);
+            _bottomFlangeFittingDimensioner = new BottomFlangeFittingDimensioner(session.Model);
             _mainPartHoleDimensioner = new MainPartHoleDimensioner(session.Model);
             _endPlateDimensioner = new EndPlateDimensioner(session.Model);
         }
@@ -125,6 +127,11 @@ namespace TeklaDrawingAssistant.Core
             var setoutPlan = _setoutPlanner.Build(dimensionAnalysis);
             _fittingDimensioner.Dimension(dimensionAnalysis, setoutPlan, dimensionMessages);
 
+            // Reinstate the common bottom-flange fitting set-out in the retained web view.
+            // This is deliberately below the member and includes fitting widths + closing dim.
+            var bottomFlangeAnalysis = _analyzer.Analyze();
+            _bottomFlangeFittingDimensioner.Dimension(bottomFlangeAnalysis, dimensionMessages);
+
             // Main-member holes are dimensioned by structural face ownership:
             // WEB only in the base/web view; TOP/BOTTOM flange only in their flange views.
             var mainHoleAnalysis = _analyzer.Analyze();
@@ -161,6 +168,7 @@ namespace TeklaDrawingAssistant.Core
             log.AppendLine();
             log.AppendLine("Final straight dimension sets on drawing: " + finalDimensionCount + ".");
             log.AppendLine("End sections use a dedicated end-plate dimensioning pass after the generic fitting dimensions.");
+            log.AppendLine("Bottom-flange hanging fittings get one dedicated longitudinal chain below the base/web view.");
             log.AppendLine("Main-part holes use structural face ownership: WEB -> base/web, TOP -> top flange, BOTTOM -> bottom flange.");
             log.AppendLine("Final view layout is applied after dimensions so annotation corridors are preserved.");
             log.AppendLine("Part marks, weld marks, cuts/notches and other misc annotations remain for later stages.");
