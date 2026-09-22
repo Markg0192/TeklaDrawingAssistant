@@ -11,61 +11,106 @@ using DrawingView = Tekla.Structures.Drawing.View;
 namespace TeklaDrawingAssistant.Core
 {
     /// <summary>
-    /// Small deterministic cleanup pass applied after view creation.
-    /// Keeps view generation logic focused on geometry while this class handles
-    /// generated-view presentation needed before dimensions are added.
+    /// Presentation/layout pass for generated views.
+    ///
+    /// Apply() runs immediately after view creation to strip unwanted grids and give
+    /// the end sections some working space.
+    /// FinaliseLayout() runs after dimensions/marks have been generated and places the
+    /// views into their final fabrication layout with generous annotation corridors.
     /// </summary>
     public sealed class GeneratedViewPostProcessor
     {
-        private const double ExtraEndGap = 8.0;
+        private const double PreDimensionEndGap = 14.0;
+        private const double FinalFlangeGap = 58.0;
+        private const double FinalEndGap = 42.0;
+        private const double SheetMargin = 4.0;
 
         public void Apply(DrawingAnalysisResult analysis, IList<string> messages)
         {
             if (analysis == null || analysis.Drawing == null)
                 return;
 
-            var removedGridViews = 0;
+            var cleaned = CleanGeneratedFlangeGrids(analysis);
+            var baseView = GetBaseView(analysis);
 
+            if (baseView != null)
+            {
+                MoveEndViewOutward(analysis.Drawing, analysis.Views, "A-A", true, PreDimensionEndGap);
+                MoveEndViewOutward(analysis.Drawing, analysis.Views, "B-B", false, PreDimensionEndGap);
+            }
+
+            analysis.Drawing.CommitChanges();
+
+            if (cleaned > 0)
+                messages?.Add("Post-process: removed/hid grids and grid lines from " + cleaned + " flange view(s).");
+
+            messages?.Add("Post-process: reserved extra clearance around end views before dimensioning.");
+        }
+
+        public void FinaliseLayout(DrawingAnalysisResult analysis, IList<string> messages)
+        {
+            if (analysis == null || analysis.Drawing == null)
+                return;
+
+            var baseView = GetBaseView(analysis);
+            if (baseView == null)
+                return;
+
+            // Grid representations occasionally reappear when Tekla updates the generated
+            // top/bottom views. Strip them again in the final pass.
+            CleanGeneratedFlangeGrids(analysis);
+
+            PlaceFlangeView(analysis.Drawing, baseView, FindView(analysis.Views, "TDA_TOP"), true);
+            PlaceFlangeView(analysis.Drawing, baseView, FindView(analysis.Views, "TDA_BOTTOM"), false);
+            PlaceEndView(analysis.Drawing, baseView, FindView(analysis.Views, "A-A"), true);
+            PlaceEndView(analysis.Drawing, baseView, FindView(analysis.Views, "B-B"), false);
+
+            analysis.Drawing.CommitChanges();
+            messages?.Add("Final layout: rebuilt annotation corridors after dimensions; top/bottom views spaced vertically and A-A/B-B spaced outward from their member ends.");
+        }
+
+        private static int CleanGeneratedFlangeGrids(DrawingAnalysisResult analysis)
+        {
+            var cleaned = 0;
             foreach (var view in analysis.Views)
             {
                 if (view.View == null)
                     continue;
 
                 var name = (view.View.Name ?? string.Empty).Trim();
-                if (name.Equals("TDA_TOP", StringComparison.OrdinalIgnoreCase) ||
-                    name.Equals("TDA_BOTTOM", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (RemoveGrids(view.View))
-                        removedGridViews++;
-                }
+                if (!name.Equals("TDA_TOP", StringComparison.OrdinalIgnoreCase) &&
+                    !name.Equals("TDA_BOTTOM", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (RemoveGrids(view.View))
+                    cleaned++;
             }
 
-            var baseView = analysis.Views
-                .Where(view => view.View != null && view.ContainsMainPart && view.MainPartBounds != null)
-                .Where(view => !IsGenerated(view.View))
-                .OrderByDescending(view => Math.Abs(view.MainPartBounds.Width * view.MainPartBounds.Height))
-                .FirstOrDefault();
-
-            if (baseView != null)
-            {
-                MoveEndViewOutward(analysis.Drawing, analysis.Views, baseView, "A-A", true);
-                MoveEndViewOutward(analysis.Drawing, analysis.Views, baseView, "B-B", false);
-            }
-
-            analysis.Drawing.CommitChanges();
-
-            if (removedGridViews > 0)
-                messages?.Add("Post-process: removed grids from " + removedGridViews + " flange view(s).");
-
-            messages?.Add("Post-process: added a little extra paper-space clearance to the end views for dimensions.");
+            return cleaned;
         }
 
         private static bool RemoveGrids(DrawingView view)
         {
             var changed = false;
+
+            // Some Tekla-generated views expose GridLine objects directly, not only as
+            // children of Grid. Hide these first so the red grid lines cannot survive a
+            // parent-grid delete/update.
+            var directLines = view.GetObjects(new[] { typeof(DrawingGridLine) });
+            while (directLines.MoveNext())
+            {
+                var line = directLines.Current as DrawingGridLine;
+                if (line == null)
+                    continue;
+
+                if (line.Hideable != null)
+                    line.Hideable.HideFromDrawingView();
+
+                changed = true;
+            }
+
             var grids = view.GetObjects(new[] { typeof(DrawingGrid) });
             var delete = new List<DrawingGrid>();
-
             while (grids.MoveNext())
             {
                 var grid = grids.Current as DrawingGrid;
@@ -83,9 +128,6 @@ namespace TeklaDrawingAssistant.Core
                         line.Hideable.HideFromDrawingView();
                 }
 
-                // A drawing-grid object is only the representation in this drawing view;
-                // deleting it does not delete the model grid. If Tekla refuses the delete,
-                // hide it as a fallback.
                 if (!grid.Delete() && grid.Hideable != null)
                     grid.Hideable.HideFromDrawingView();
 
@@ -98,12 +140,74 @@ namespace TeklaDrawingAssistant.Core
             return changed;
         }
 
+        private static void PlaceFlangeView(
+            Drawing drawing,
+            ViewAnalysis baseView,
+            ViewAnalysis generated,
+            bool top)
+        {
+            if (drawing == null || baseView == null || baseView.View == null ||
+                generated == null || generated.View == null)
+                return;
+
+            var desired = new Point(
+                baseView.View.Origin.X,
+                baseView.View.Origin.Y + (top ? 1.0 : -1.0) *
+                (baseView.View.Height * 0.5 + generated.View.Height * 0.5 + FinalFlangeGap),
+                0.0);
+
+            generated.View.Origin = ClampToSheet(drawing, generated.View, desired);
+            generated.View.Modify();
+        }
+
+        private static void PlaceEndView(
+            Drawing drawing,
+            ViewAnalysis baseView,
+            ViewAnalysis section,
+            bool startEnd)
+        {
+            if (drawing == null || baseView == null || baseView.View == null ||
+                baseView.MainPartBounds == null || section == null || section.View == null)
+                return;
+
+            var scale = GetScale(baseView.View);
+            var bounds = baseView.MainPartBounds;
+            var horizontal = Math.Abs(bounds.Width) >= Math.Abs(bounds.Height);
+            Point desired;
+
+            if (horizontal)
+            {
+                var endInView = startEnd ? bounds.MinX : bounds.MaxX;
+                var endOnSheet = baseView.View.Origin.X + endInView / scale;
+                var centreOnSheet = baseView.View.Origin.Y + bounds.CentreY / scale;
+
+                desired = new Point(
+                    endOnSheet + (startEnd ? -1.0 : 1.0) * (section.View.Width * 0.5 + FinalEndGap),
+                    centreOnSheet,
+                    0.0);
+            }
+            else
+            {
+                var endInView = startEnd ? bounds.MinY : bounds.MaxY;
+                var endOnSheet = baseView.View.Origin.Y + endInView / scale;
+                var centreOnSheet = baseView.View.Origin.X + bounds.CentreX / scale;
+
+                desired = new Point(
+                    centreOnSheet,
+                    endOnSheet + (startEnd ? -1.0 : 1.0) * (section.View.Height * 0.5 + FinalEndGap),
+                    0.0);
+            }
+
+            section.View.Origin = ClampToSheet(drawing, section.View, desired);
+            section.View.Modify();
+        }
+
         private static void MoveEndViewOutward(
             Drawing drawing,
             IEnumerable<ViewAnalysis> views,
-            ViewAnalysis baseView,
             string sectionName,
-            bool startEnd)
+            bool startEnd,
+            double distance)
         {
             var section = views.FirstOrDefault(view =>
                 view.View != null &&
@@ -113,19 +217,53 @@ namespace TeklaDrawingAssistant.Core
                 return;
 
             var desired = new Point(
-                section.View.Origin.X + (startEnd ? -ExtraEndGap : ExtraEndGap),
+                section.View.Origin.X + (startEnd ? -distance : distance),
                 section.View.Origin.Y,
                 0.0);
 
-            var sheet = drawing.GetSheet();
-            if (sheet != null && sheet.Width > 0.0 && sheet.Height > 0.0)
-            {
-                var halfWidth = section.View.Width * 0.5 + 2.0;
-                desired.X = Math.Max(halfWidth, Math.Min(sheet.Width - halfWidth, desired.X));
-            }
-
-            section.View.Origin = desired;
+            section.View.Origin = ClampToSheet(drawing, section.View, desired);
             section.View.Modify();
+        }
+
+        private static Point ClampToSheet(Drawing drawing, DrawingView view, Point desired)
+        {
+            var sheet = drawing.GetSheet();
+            if (sheet == null || sheet.Width <= 0.0 || sheet.Height <= 0.0)
+                return desired;
+
+            var halfWidth = view.Width * 0.5 + SheetMargin;
+            var halfHeight = view.Height * 0.5 + SheetMargin;
+
+            desired.X = Math.Max(halfWidth, Math.Min(sheet.Width - halfWidth, desired.X));
+            desired.Y = Math.Max(halfHeight, Math.Min(sheet.Height - halfHeight, desired.Y));
+            return desired;
+        }
+
+        private static ViewAnalysis GetBaseView(DrawingAnalysisResult analysis)
+        {
+            return analysis.Views
+                .Where(view => view.View != null && view.ContainsMainPart && view.MainPartBounds != null)
+                .Where(view => !IsGenerated(view.View))
+                .OrderByDescending(view => Math.Abs(view.MainPartBounds.Width * view.MainPartBounds.Height))
+                .FirstOrDefault()
+                ?? analysis.Views
+                    .Where(view => view.View != null && view.ContainsMainPart && view.MainPartBounds != null)
+                    .OrderByDescending(view => Math.Abs(view.MainPartBounds.Width * view.MainPartBounds.Height))
+                    .FirstOrDefault();
+        }
+
+        private static ViewAnalysis FindView(IEnumerable<ViewAnalysis> views, string name)
+        {
+            return views.FirstOrDefault(view =>
+                view.View != null &&
+                string.Equals(view.View.Name ?? string.Empty, name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static double GetScale(DrawingView view)
+        {
+            return view != null && view.Attributes != null && view.Attributes.Scale > 0.0
+                ? view.Attributes.Scale
+                : 1.0;
         }
 
         private static bool IsGenerated(DrawingView view)
