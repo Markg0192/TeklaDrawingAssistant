@@ -143,21 +143,30 @@ namespace TeklaDrawingAssistant.Core
                     continue;
                 }
 
-                if (view.Kind == ViewKind.Unknown)
-                {
-                    log.AppendLine($"{view.Name}: owns {ownedParts.Count} part(s) and {ownedHoleGroups.Count} hole group(s), but this is a custom/skew face. View ownership is correct; its custom dimension rule is still to be added.");
-                    continue;
-                }
-
-                var holeDimensions = _dimensioner.Dimension(view, options, ownedHoleGroups);
+                // A custom/skew fitting-face view can still safely receive the plate's
+                // own face dimensions because the view was created normal to that face.
                 var partDimensions = _partDimensioner.Dimension(view, ownedParts, options);
-
-                totalHoleDimensions += holeDimensions;
                 totalPartDimensions += partDimensions;
 
-                log.AppendLine(
-                    $"{view.Name}: {view.Kind}, owns {ownedParts.Count} part(s) / {ownedHoleGroups.Count} hole group(s), " +
-                    $"created {partDimensions} plate dimensions and {holeDimensions} hole dimensions.");
+                var holeDimensions = 0;
+                if (view.Kind != ViewKind.Unknown)
+                {
+                    holeDimensions = _dimensioner.Dimension(view, options, ownedHoleGroups);
+                    totalHoleDimensions += holeDimensions;
+                }
+
+                if (view.Kind == ViewKind.Unknown && ownedHoleGroups.Count > 0)
+                {
+                    log.AppendLine(
+                        $"{view.Name}: custom fitting-face view, created {partDimensions} plate dimensions. " +
+                        $"{ownedHoleGroups.Count} hole group(s) deliberately left for the custom/skew hole rule.");
+                }
+                else
+                {
+                    log.AppendLine(
+                        $"{view.Name}: {view.Kind}, owns {ownedParts.Count} part(s) / {ownedHoleGroups.Count} hole group(s), " +
+                        $"created {partDimensions} plate dimensions and {holeDimensions} hole dimensions.");
+                }
             }
 
             analysis.Drawing.CommitChanges();
