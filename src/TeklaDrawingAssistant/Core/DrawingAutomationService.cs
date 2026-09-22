@@ -103,10 +103,9 @@ namespace TeklaDrawingAssistant.Core
 
             var flangeViews = _flangeViewPlanner.RebuildFlangeViews(analysis, messages);
 
-            // Re-read after flange creation, then build end views without Tekla's
-            // CreateSectionView command. We control the end coordinate system, restriction
-            // volume and section mark ourselves so drawing defaults cannot decide what steel
-            // belongs in the end view.
+            // Re-read after flange creation, then create the two end sections in the
+            // simplest possible way: detected end plate -> outside face -> normal Tekla
+            // CreateSectionView using the retained base view attributes/scale.
             analysis = _analyzer.Analyze();
             var endViews = _endViewBuilder.Build(analysis, messages);
 
