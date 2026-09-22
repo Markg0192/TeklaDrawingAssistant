@@ -22,11 +22,11 @@ namespace TeklaDrawingAssistant.Core
             var widthAxis = localY;
             var depthAxis = localZ;
 
-            // Tekla's local Y/Z orientation is not consistent enough for us to
-            // assume Y=web normal and Z=flange normal. Use the actual section
-            // extents: the larger transverse span is the member depth; the smaller
-            // transverse span is the flange width / web-view normal.
-            var handler = mainPart.Model.GetWorkPlaneHandler();
+            // Tekla local Y/Z is not consistent enough to assume one is always
+            // web-normal and the other flange-normal. Use the actual section spans:
+            // larger transverse span = section depth, smaller = section width.
+            var model = new Model();
+            var handler = model.GetWorkPlaneHandler();
             var original = handler.GetCurrentTransformationPlane();
 
             try
