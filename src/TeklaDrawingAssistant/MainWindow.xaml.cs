@@ -56,8 +56,7 @@ namespace TeklaDrawingAssistant
         {
             RunSafely(() =>
             {
-                var analysis = _service.Analyze();
-                LogTextBox.Text = DrawingAutomationService.FormatAnalysis(analysis);
+                LogTextBox.Text = _service.AnalyzeDimensionRulesText();
                 UpdateConnectionStatus();
             });
         }
