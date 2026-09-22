@@ -86,12 +86,10 @@ namespace TeklaDrawingAssistant.Core
                     continue;
                 }
 
-                var viewId = owner.View.Identifier.ID;
-
                 if (feature.Kind == FeatureKind.HoleGroup)
-                    AddOwnership(result.HoleGroupsByViewId, viewId, feature.IdentifierId);
+                    AddOwnership(result.HoleGroupsByView, owner.View, feature.IdentifierId);
                 else if (feature.Kind == FeatureKind.SecondaryPart)
-                    AddOwnership(result.PartsByViewId, viewId, feature.IdentifierId);
+                    AddOwnership(result.PartsByView, owner.View, feature.IdentifierId);
 
                 result.Messages.Add(feature.Description + " -> " + owner.View.Name);
             }
@@ -402,13 +400,16 @@ namespace TeklaDrawingAssistant.Core
             }
         }
 
-        private static void AddOwnership(Dictionary<int, HashSet<int>> map, int viewId, int objectId)
+        private static void AddOwnership(
+            Dictionary<DrawingView, HashSet<int>> map,
+            DrawingView view,
+            int objectId)
         {
             HashSet<int> ids;
-            if (!map.TryGetValue(viewId, out ids))
+            if (!map.TryGetValue(view, out ids))
             {
                 ids = new HashSet<int>();
-                map.Add(viewId, ids);
+                map.Add(view, ids);
             }
 
             ids.Add(objectId);
@@ -463,18 +464,18 @@ namespace TeklaDrawingAssistant.Core
 
     public sealed class FaceViewOwnership
     {
-        public Dictionary<int, HashSet<int>> HoleGroupsByViewId { get; } =
-            new Dictionary<int, HashSet<int>>();
+        public Dictionary<DrawingView, HashSet<int>> HoleGroupsByView { get; } =
+            new Dictionary<DrawingView, HashSet<int>>();
 
-        public Dictionary<int, HashSet<int>> PartsByViewId { get; } =
-            new Dictionary<int, HashSet<int>>();
+        public Dictionary<DrawingView, HashSet<int>> PartsByView { get; } =
+            new Dictionary<DrawingView, HashSet<int>>();
 
         public List<string> Messages { get; } = new List<string>();
 
         public HashSet<int> GetHoleGroups(DrawingView view)
         {
             HashSet<int> result;
-            return view != null && HoleGroupsByViewId.TryGetValue(view.Identifier.ID, out result)
+            return view != null && HoleGroupsByView.TryGetValue(view, out result)
                 ? result
                 : new HashSet<int>();
         }
@@ -482,7 +483,7 @@ namespace TeklaDrawingAssistant.Core
         public HashSet<int> GetParts(DrawingView view)
         {
             HashSet<int> result;
-            return view != null && PartsByViewId.TryGetValue(view.Identifier.ID, out result)
+            return view != null && PartsByView.TryGetValue(view, out result)
                 ? result
                 : new HashSet<int>();
         }
