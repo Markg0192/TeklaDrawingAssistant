@@ -17,6 +17,8 @@ namespace TeklaDrawingAssistant.Core
     /// Plans fitting set-out before any dimensions are created.
     /// Every fitting must be located in two independent member axes.
     /// Hole centres are preferred whenever an attached bolt group is visible in the chosen view.
+    /// The fitting's core/true-face view is strongly preferred over a section where the fitting
+    /// is only seen edge-on.
     /// </summary>
     public sealed class FittingSetoutPlanner
     {
@@ -140,10 +142,18 @@ namespace TeklaDrawingAssistant.Core
             var visibleBolt = GetVisibleBoltGroups(part, view.View).FirstOrDefault();
             var spaceScore = GetSpaceScore(analysis, view, axis.Axis);
 
+            // Fabrication priority is deliberately ordered like this:
+            // 1) the axis must read properly in the view;
+            // 2) dimension the fitting in the view where most of its real face is visible;
+            // 3) prefer useful face conventions (web/flange/end);
+            // 4) use available paper space only as a tie-breaker.
             var score = axisProjection * 35.0;
-            score += coreAlignment * 15.0;
+            score += coreAlignment * 65.0;
             score += GetViewPolicyScore(axis.Axis, view.Kind);
-            score += spaceScore;
+            score += spaceScore * 0.25;
+
+            if (coreAlignment >= 0.90)
+                score += 30.0;
 
             if (visibleBolt != null)
                 score += 35.0;
@@ -199,8 +209,6 @@ namespace TeklaDrawingAssistant.Core
             if (sheet == null || sheet.Width <= 0.0 || sheet.Height <= 0.0)
                 return 0.0;
 
-            // Along-member dimensions normally consume vertical paper space above/below a view.
-            // Transverse/vertical dimensions normally consume horizontal paper space left/right.
             var freePaper = axis == FittingSetoutAxis.MemberX
                 ? Math.Max(0.0, sheet.Height - view.View.Height)
                 : Math.Max(0.0, sheet.Width - view.View.Width);
@@ -230,8 +238,6 @@ namespace TeklaDrawingAssistant.Core
                 new AxisInfo(FittingSetoutAxis.MemberZ, "VERTICAL Z (member depth)", axes.Z)
             };
 
-            // The two member axes most nearly lying in the fitting face are the two
-            // independent directions required to locate that fitting.
             return candidates
                 .OrderBy(candidate => GeometryMath.AbsoluteDot(candidate.Vector, fittingNormal))
                 .Take(2)
