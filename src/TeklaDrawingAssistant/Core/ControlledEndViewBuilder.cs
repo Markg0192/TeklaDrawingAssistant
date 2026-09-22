@@ -19,8 +19,8 @@ namespace TeklaDrawingAssistant.Core
     /// <summary>
     /// Creates fabrication end sections from detected end plates.
     /// The section is cut on the outside plate face and looks back into the member.
-    /// Views are kept at the same scale as the retained base view and are placed
-    /// directly beside the member end they describe.
+    /// End views are positioned from the actual projected member end on the sheet,
+    /// not from DrawingView.Origin (which is not the centre of the view frame).
     /// </summary>
     public sealed class ControlledEndViewBuilder
     {
@@ -54,7 +54,7 @@ namespace TeklaDrawingAssistant.Core
 
             messages?.Add("END ======================================================");
             messages?.Add("END strategy: detected end plate -> outside face -> standard Tekla section looking inward.");
-            messages?.Add("END layout: each end section is placed directly beside the member end it describes.");
+            messages?.Add("END layout: section position is anchored to the actual projected member end on the sheet.");
             messages?.Add("END section names: A-A / B-B. Section-mark appearance will be tidied later.");
 
             RemoveExistingSectionMarks(source.View);
@@ -62,33 +62,15 @@ namespace TeklaDrawingAssistant.Core
             if (detection.Start != null)
             {
                 DeleteGeneratedSections(analysis.Drawing, "TDA_SECTION_A", "A-A");
-
-                if (BuildOneEnd(
-                    analysis,
-                    source,
-                    detection.Start.Part,
-                    true,
-                    allowedIds,
-                    messages) != null)
-                {
+                if (BuildOneEnd(analysis, source, detection.Start.Part, true, allowedIds, messages) != null)
                     created++;
-                }
             }
 
             if (detection.Finish != null)
             {
                 DeleteGeneratedSections(analysis.Drawing, "TDA_SECTION_B", "B-B");
-
-                if (BuildOneEnd(
-                    analysis,
-                    source,
-                    detection.Finish.Part,
-                    false,
-                    allowedIds,
-                    messages) != null)
-                {
+                if (BuildOneEnd(analysis, source, detection.Finish.Part, false, allowedIds, messages) != null)
                     created++;
-                }
             }
 
             messages?.Add("END ======================================================");
@@ -186,21 +168,20 @@ namespace TeklaDrawingAssistant.Core
                 out lineStart,
                 out lineEnd);
 
-            var insertion = GetInitialInsertionPoint(source.View, startEnd);
+            var insertion = GetInitialInsertionPoint(source, startEnd);
             var markAttributes = new SectionMarkBase.SectionMarkAttributes
             {
                 MarkName = letter
             };
 
-            // For now keep Tekla's normal section-mark appearance. View creation,
-            // direction and placement are the priority; mark styling comes later.
+            // View creation first. Section mark cosmetics can be standardised later.
             var viewAttributes = source.View.Attributes ?? new DrawingView.ViewAttributes();
             viewAttributes.LabelPositionVertical = DrawingView.VerticalLabelPosition.Bottom;
 
             messages?.Add(
                 "END " + letter + " " + attempt + ": section line " + P(lineStart) + " -> " + P(lineEnd) +
                 "; insertion=" + P(insertion) +
-                "; source scale=" + F(viewAttributes.Scale) +
+                "; source scale=" + F(GetScale(source.View)) +
                 "; depthUp/down=" + F(SectionDepth) + ".");
 
             DrawingView sectionView;
@@ -233,7 +214,7 @@ namespace TeklaDrawingAssistant.Core
                 sectionView.Attributes.LabelPositionVertical = DrawingView.VerticalLabelPosition.Bottom;
 
             CleanGeneratedSection(sectionView, allowedIds);
-            PlaceEndSection(analysis.Drawing, source.View, sectionView, startEnd);
+            var finalOrigin = PlaceEndSection(analysis.Drawing, source, sectionView, startEnd);
             sectionView.Modify();
             analysis.Drawing.CommitChanges();
 
@@ -245,15 +226,15 @@ namespace TeklaDrawingAssistant.Core
                 "END " + letter + " " + attempt + ": kept " + visibleName +
                 ". frame=" + F(sectionView.Width) + "x" + F(sectionView.Height) +
                 "; scale=" + F(sectionView.Attributes == null ? 0.0 : sectionView.Attributes.Scale) +
-                "; origin=" + P(sectionView.Origin) +
+                "; final origin=" + P(finalOrigin) +
                 "; DrawingPart count=" + drawingPartCount +
                 "; target via DrawingPart=" + drawingPartVisible +
                 "; target via GetModelObjects=" + modelObjectVisible +
                 " (diagnostic only).");
 
             messages?.Add(
-                "END " + letter + " " + attempt + ": SUCCESS - outside-in section kept; " +
-                visibleName + " placed beside the " + (startEnd ? "start" : "finish") + " end of the base view.");
+                "END " + letter + " " + attempt + ": SUCCESS - " + visibleName +
+                " placed immediately beside the projected " + (startEnd ? "start" : "finish") + " end.");
 
             return sectionView;
         }
@@ -274,8 +255,7 @@ namespace TeklaDrawingAssistant.Core
                 var bottom = new Point(cut, minY, 0.0);
                 var top = new Point(cut, maxY, 0.0);
 
-                // On the test beam this direction gives the fabrication view from
-                // outside the member back toward its centre.
+                // This direction produces an outside -> inward view on the test beam.
                 if (targetOnLowSide)
                 {
                     start = top;
@@ -442,45 +422,95 @@ namespace TeklaDrawingAssistant.Core
                 item.Delete();
         }
 
-        private static void PlaceEndSection(
+        private static Point PlaceEndSection(
             Drawing drawing,
-            DrawingView source,
+            ViewAnalysis source,
             DrawingView section,
             bool startEnd)
         {
-            if (drawing == null || source == null || section == null)
-                return;
+            if (drawing == null || source == null || source.View == null ||
+                source.MainPartBounds == null || section == null)
+                return section == null ? null : section.Origin;
 
-            // End sections belong beside the end they describe and on the same horizontal
-            // centreline as the base view. This deliberately ignores the top/bottom flange
-            // views: those sit above/below, while A-A and B-B sit left/right.
-            var horizontalOffset = source.Width * 0.5 + section.Width * 0.5 + ViewGap;
-            var desired = new Point(
-                source.Origin.X + (startEnd ? -horizontalOffset : horizontalOffset),
-                source.Origin.Y,
-                0.0);
+            var scale = GetScale(source.View);
+            var bounds = source.MainPartBounds;
+            var horizontal = Math.Abs(bounds.Width) >= Math.Abs(bounds.Height);
+            Point desired;
+
+            if (horizontal)
+            {
+                // DrawingView.Origin is the sheet location of the view coordinate-system
+                // origin, NOT the centre of the visible view frame. Convert the actual
+                // projected main-part end from view/model units to sheet millimetres.
+                var endXInView = startEnd ? bounds.MinX : bounds.MaxX;
+                var memberEndOnSheet = source.View.Origin.X + endXInView / scale;
+                var memberCentreYOnSheet = source.View.Origin.Y +
+                                           ((bounds.MinY + bounds.MaxY) * 0.5) / scale;
+
+                desired = new Point(
+                    memberEndOnSheet + (startEnd
+                        ? -(section.Width * 0.5 + ViewGap)
+                        : section.Width * 0.5 + ViewGap),
+                    memberCentreYOnSheet,
+                    0.0);
+            }
+            else
+            {
+                var endYInView = startEnd ? bounds.MinY : bounds.MaxY;
+                var memberEndOnSheet = source.View.Origin.Y + endYInView / scale;
+                var memberCentreXOnSheet = source.View.Origin.X +
+                                           ((bounds.MinX + bounds.MaxX) * 0.5) / scale;
+
+                desired = new Point(
+                    memberCentreXOnSheet,
+                    memberEndOnSheet + (startEnd
+                        ? -(section.Height * 0.5 + ViewGap)
+                        : section.Height * 0.5 + ViewGap),
+                    0.0);
+            }
 
             var sheet = drawing.GetSheet();
             if (sheet != null && sheet.Width > 0.0 && sheet.Height > 0.0)
             {
-                var halfWidth = section.Width * 0.5 + ViewGap;
-                var halfHeight = section.Height * 0.5 + ViewGap;
+                var halfWidth = section.Width * 0.5 + 2.0;
+                var halfHeight = section.Height * 0.5 + 2.0;
                 desired.X = Math.Max(halfWidth, Math.Min(sheet.Width - halfWidth, desired.X));
                 desired.Y = Math.Max(halfHeight, Math.Min(sheet.Height - halfHeight, desired.Y));
             }
 
             section.Origin = desired;
+            return desired;
         }
 
-        private static Point GetInitialInsertionPoint(DrawingView source, bool startEnd)
+        private static Point GetInitialInsertionPoint(ViewAnalysis source, bool startEnd)
         {
-            // The final position is recalculated after creation when the section width is known.
-            // Start Tekla off at the correct member end rather than in a lower-row position.
-            var sideOffset = source.Width * 0.5 + 30.0;
-            return new Point(
-                source.Origin.X + (startEnd ? -sideOffset : sideOffset),
-                source.Origin.Y,
-                0.0);
+            if (source == null || source.View == null || source.MainPartBounds == null)
+                return new Point();
+
+            var scale = GetScale(source.View);
+            var bounds = source.MainPartBounds;
+            var horizontal = Math.Abs(bounds.Width) >= Math.Abs(bounds.Height);
+
+            if (horizontal)
+            {
+                var endX = startEnd ? bounds.MinX : bounds.MaxX;
+                var sheetX = source.View.Origin.X + endX / scale;
+                var sheetY = source.View.Origin.Y + ((bounds.MinY + bounds.MaxY) * 0.5) / scale;
+                return new Point(sheetX + (startEnd ? -30.0 : 30.0), sheetY, 0.0);
+            }
+
+            var endY = startEnd ? bounds.MinY : bounds.MaxY;
+            var x = source.View.Origin.X + ((bounds.MinX + bounds.MaxX) * 0.5) / scale;
+            var y = source.View.Origin.Y + endY / scale;
+            return new Point(x, y + (startEnd ? -30.0 : 30.0), 0.0);
+        }
+
+        private static double GetScale(DrawingView view)
+        {
+            if (view != null && view.Attributes != null && view.Attributes.Scale > 0.000001)
+                return view.Attributes.Scale;
+
+            return 1.0;
         }
 
         private static int CountDrawingParts(DrawingView view)
