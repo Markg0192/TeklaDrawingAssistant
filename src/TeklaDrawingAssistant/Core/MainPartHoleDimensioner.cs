@@ -14,14 +14,10 @@ namespace TeklaDrawingAssistant.Core
     /// <summary>
     /// Dedicated main-member hole dimensioner.
     ///
-    /// The important distinction is structural, not drawing-view visibility:
-    /// - bolt axis through the section WIDTH => WEB holes;
-    /// - bolt axis through the section DEPTH => FLANGE holes;
-    /// - flange holes are split TOP/BOTTOM by their position across the section depth.
-    ///
-    /// The section width/depth axes are determined from the actual main-part local solid
-    /// extents. This avoids assuming Tekla local Y is always the web normal and local Z
-    /// is always the flange normal.
+    /// Structural ownership:
+    /// - bolt axis through section WIDTH => WEB holes;
+    /// - bolt axis through section DEPTH => FLANGE holes;
+    /// - flange holes are split TOP/BOTTOM by their position across section depth.
     /// </summary>
     public sealed class MainPartHoleDimensioner
     {
@@ -119,7 +115,7 @@ namespace TeklaDrawingAssistant.Core
             var created = 0;
             var allPoints = groups.SelectMany(group => group.Points).ToList();
 
-            // Longitudinal set-out for the whole fabrication face, including the closing dim.
+            // Longitudinal set-out for the whole fabrication face, including closing dimension.
             var longitudinal = UniqueAlongAxis(allPoints, memberX);
             if (longitudinal.Count > 0)
             {
@@ -154,18 +150,28 @@ namespace TeklaDrawingAssistant.Core
 
                     if (face == MainFace.Web)
                     {
-                        // Web holes: vertical position from nearest flange edge.
-                        var average = stations.Average(point => Dot(point, transverse));
-                        var edgeA = GetExtremeDatum(view.MainPartBounds, transverse, true, group.Points);
-                        var edgeB = GetExtremeDatum(view.MainPartBounds, transverse, false, group.Points);
-                        var datum = Math.Abs(average - Dot(edgeA, transverse)) <= Math.Abs(average - Dot(edgeB, transverse))
-                            ? edgeA
-                            : edgeB;
+                        // For a horizontal fabrication elevation, an upper hole run is
+                        // always dimensioned from the TOP flange corner; a lower run from
+                        // the BOTTOM flange corner. Do not let the sign of the projected
+                        // member-depth vector invert that choice.
+                        var averageY = group.Points.Average(point => point.Y);
+                        var useTop = averageY >= view.MainPartBounds.CentreY;
+                        var leftMostX = group.Points.Min(point => point.X);
+                        var datum = new Point(
+                            leftMostX,
+                            useTop ? view.MainPartBounds.MaxY : view.MainPartBounds.MinY,
+                            0.0);
+
                         points.Add(datum);
+
+                        messages?.Add(
+                            "MAIN HOLES V2 WEB group " + group.ModelIdentifierId +
+                            ": " + (useTop ? "upper" : "lower") +
+                            " run -> " + (useTop ? "TOP" : "BOTTOM") + " flange corner datum.");
                     }
                     else
                     {
-                        // Flange holes: transverse gauge from the member centreline.
+                        // Flange holes: transverse gauge from member centreline.
                         points.Add(GetCentreLineDatum(view.MainPartBounds, transverse, group.Points));
                     }
 
@@ -388,26 +394,6 @@ namespace TeklaDrawingAssistant.Core
             return Math.Abs(axis.X) >= Math.Abs(axis.Y)
                 ? new Point(bounds.CentreX, averageY, 0.0)
                 : new Point(averageX, bounds.CentreY, 0.0);
-        }
-
-        private static Point GetExtremeDatum(
-            ViewBounds bounds,
-            Axis2D axis,
-            bool maximum,
-            IEnumerable<Point> targets)
-        {
-            var target = targets.First();
-            var corners = GetCorners(bounds);
-            var selected = maximum
-                ? corners.OrderByDescending(point => Dot(point, axis)).First()
-                : corners.OrderBy(point => Dot(point, axis)).First();
-
-            // Keep the extension line local to the hole group while using the correct
-            // flange edge as the measured datum.
-            if (Math.Abs(axis.X) >= Math.Abs(axis.Y))
-                return new Point(selected.X, target.Y, 0.0);
-
-            return new Point(target.X, selected.Y, 0.0);
         }
 
         private static Axis2D ProjectAxis(Vector globalAxis, CoordinateSystem viewCs)
