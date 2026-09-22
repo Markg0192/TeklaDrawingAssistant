@@ -17,6 +17,7 @@ namespace TeklaDrawingAssistant.Core
         private readonly GeneratedViewPostProcessor _viewPostProcessor;
         private readonly FittingSetoutPlanner _setoutPlanner;
         private readonly FittingDimensioner _fittingDimensioner;
+        private readonly EndPlateDimensioner _endPlateDimensioner;
 
         public DrawingAutomationService(TeklaSession session)
         {
@@ -29,6 +30,7 @@ namespace TeklaDrawingAssistant.Core
             _viewPostProcessor = new GeneratedViewPostProcessor();
             _setoutPlanner = new FittingSetoutPlanner(session.Model);
             _fittingDimensioner = new FittingDimensioner(session.Model);
+            _endPlateDimensioner = new EndPlateDimensioner(session.Model);
         }
 
         public DrawingAnalysisResult Analyze()
@@ -119,7 +121,12 @@ namespace TeklaDrawingAssistant.Core
 
             var dimensionAnalysis = _analyzer.Analyze();
             var setoutPlan = _setoutPlanner.Build(dimensionAnalysis);
-            var dimensionsCreated = _fittingDimensioner.Dimension(dimensionAnalysis, setoutPlan, dimensionMessages);
+            _fittingDimensioner.Dimension(dimensionAnalysis, setoutPlan, dimensionMessages);
+
+            // End sections have their own fabrication convention. Replace any generic
+            // dimensions in A-A/B-B with the tightly controlled end-plate set-out.
+            var endDimensionAnalysis = _analyzer.Analyze();
+            _endPlateDimensioner.Dimension(endDimensionAnalysis, dimensionMessages);
 
             // Dimensions/marks change the amount of clear paper needed around each view.
             // Do a final deterministic layout pass only after annotation generation.
@@ -132,6 +139,7 @@ namespace TeklaDrawingAssistant.Core
                 log.AppendLine("  " + message);
 
             var finalAnalysis = _analyzer.Analyze();
+            var finalDimensionCount = finalAnalysis.Views.Sum(view => view.ExistingDimensionSetCount);
 
             log.AppendLine();
             log.AppendLine($"Flange views created: {flangeViews}.");
@@ -146,7 +154,8 @@ namespace TeklaDrawingAssistant.Core
                 log.AppendLine("  " + message);
 
             log.AppendLine();
-            log.AppendLine("Straight fitting dimension sets created: " + dimensionsCreated + ".");
+            log.AppendLine("Final straight dimension sets on drawing: " + finalDimensionCount + ".");
+            log.AppendLine("End sections use a dedicated end-plate dimensioning pass after the generic fitting dimensions.");
             log.AppendLine("Final view layout is applied after dimensions so annotation corridors are preserved.");
             log.AppendLine("Current pass dimensions fitting set-out and hole patterns only; marks/welds/cuts remain for later stages.");
 
