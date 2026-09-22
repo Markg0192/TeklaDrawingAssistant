@@ -14,6 +14,7 @@ namespace TeklaDrawingAssistant.Core
         private readonly DimensionRuleEngine _ruleEngine;
         private readonly FlangeOnlyViewCreationPlanner _flangeViewPlanner;
         private readonly ControlledEndViewBuilder _endViewBuilder;
+        private readonly FittingSetoutPlanner _setoutPlanner;
 
         public DrawingAutomationService(TeklaSession session)
         {
@@ -23,6 +24,7 @@ namespace TeklaDrawingAssistant.Core
             _ruleEngine = new DimensionRuleEngine();
             _flangeViewPlanner = new FlangeOnlyViewCreationPlanner(session.Model);
             _endViewBuilder = new ControlledEndViewBuilder(session.Model);
+            _setoutPlanner = new FittingSetoutPlanner(session.Model);
         }
 
         public DrawingAnalysisResult Analyze()
@@ -103,9 +105,6 @@ namespace TeklaDrawingAssistant.Core
 
             var flangeViews = _flangeViewPlanner.RebuildFlangeViews(analysis, messages);
 
-            // Re-read after flange creation, then create the two end sections in the
-            // simplest possible way: detected end plate -> outside face -> normal Tekla
-            // CreateSectionView using the retained base view attributes/scale.
             analysis = _analyzer.Analyze();
             var endViews = _endViewBuilder.Build(analysis, messages);
 
@@ -116,13 +115,64 @@ namespace TeklaDrawingAssistant.Core
             _session.DrawingHandler.SaveActiveDrawing();
 
             var finalAnalysis = _analyzer.Analyze();
+            var setoutPlan = _setoutPlanner.Build(finalAnalysis);
+
             log.AppendLine();
             log.AppendLine($"Flange views created: {flangeViews}.");
             log.AppendLine($"End views created: {endViews}.");
             log.AppendLine($"Final views: {finalAnalysis.Views.Count}");
-            log.AppendLine("Dimension creation is currently disabled while view setup is being tuned.");
+            log.AppendLine();
+
+            AppendFittingSetoutPlan(log, setoutPlan);
+
+            log.AppendLine();
+            log.AppendLine("Dimension creation is still disabled. The set-out plan above is the next thing to validate before any Tekla dimensions are inserted.");
 
             return log.ToString();
+        }
+
+        private static void AppendFittingSetoutPlan(StringBuilder log, FittingSetoutPlan plan)
+        {
+            log.AppendLine("FITTING SET-OUT PLAN");
+            log.AppendLine(new string('-', 40));
+            log.AppendLine("Rule: every fitting must be located in at least two independent member axes; hole centres are preferred where visible.");
+            log.AppendLine();
+
+            foreach (var fitting in plan.Fittings.OrderBy(item => item.PartId))
+            {
+                var profile = string.IsNullOrWhiteSpace(fitting.Profile) ? string.Empty : " (" + fitting.Profile + ")";
+                log.AppendLine("Part " + fitting.PartId + profile);
+                log.AppendLine("  Core view: " + fitting.CoreView);
+
+                foreach (var requirement in fitting.Requirements.OrderBy(item => item.Axis))
+                {
+                    var target = requirement.TargetType == FittingSetoutTargetType.HoleGroup
+                        ? "hole group " + requirement.HoleGroupId
+                        : "fitting geometry";
+
+                    log.AppendLine(
+                        "  + " + requirement.AxisDescription +
+                        " -> " + requirement.ViewName +
+                        " | target: " + target);
+                    log.AppendLine("      " + requirement.Reason);
+                }
+
+                log.AppendLine(fitting.IsComplete
+                    ? "  COMPLETE: two independent set-out directions assigned."
+                    : "  INCOMPLETE: fewer than two independent set-out directions assigned.");
+                log.AppendLine();
+            }
+
+            if (plan.Warnings.Count > 0)
+            {
+                log.AppendLine("SET-OUT WARNINGS");
+                foreach (var warning in plan.Warnings)
+                    log.AppendLine("  ! " + warning);
+            }
+            else
+            {
+                log.AppendLine("All fittings have two independent set-out directions assigned.");
+            }
         }
 
         public static string FormatAnalysis(DrawingAnalysisResult analysis)
