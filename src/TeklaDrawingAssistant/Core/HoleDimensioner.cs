@@ -9,9 +9,16 @@ namespace TeklaDrawingAssistant.Core
 {
     public sealed class HoleDimensioner
     {
-        public int Dimension(ViewAnalysis analysis, DimensioningOptions options)
+        public int Dimension(ViewAnalysis analysis, DimensioningOptions options, ISet<int> ownedHoleGroupIds)
         {
-            if (!analysis.ContainsMainPart || analysis.MainPartBounds == null || analysis.HolePoints.Count == 0)
+            if (!analysis.ContainsMainPart || analysis.MainPartBounds == null || ownedHoleGroupIds == null || ownedHoleGroupIds.Count == 0)
+                return 0;
+
+            var groups = analysis.HoleGroups
+                .Where(group => ownedHoleGroupIds.Contains(group.ModelIdentifierId) && group.Points.Count > 0)
+                .ToList();
+
+            if (groups.Count == 0)
                 return 0;
 
             if (options.DeleteExistingStraightDimensions)
@@ -19,109 +26,96 @@ namespace TeklaDrawingAssistant.Core
 
             var created = 0;
             var bounds = analysis.MainPartBounds;
-            var offset = GetAdaptiveOffset(bounds, options);
+            var baseOffset = GetAdaptiveOffset(bounds, options);
 
-            switch (analysis.Kind)
+            for (var index = 0; index < groups.Count; index++)
             {
-                case ViewKind.Web:
-                    created += CreateHorizontalChain(
-                        analysis.View,
-                        bounds.MinX,
-                        bounds.MaxY,
-                        analysis.HolePoints,
-                        new Vector(0.0, 1.0, 0.0),
-                        offset,
-                        options);
+                var group = groups[index];
+                var offset = baseOffset + index * 8.0;
 
-                    created += CreateVerticalChain(
-                        analysis.View,
-                        bounds.MinX,
-                        bounds.MaxY,
-                        analysis.HolePoints,
-                        new Vector(-1.0, 0.0, 0.0),
-                        offset,
-                        options);
-                    break;
+                switch (analysis.Kind)
+                {
+                    case ViewKind.Web:
+                        created += CreateHorizontalChain(
+                            analysis.View,
+                            bounds.MinX,
+                            bounds.MaxY,
+                            group.Points,
+                            new Vector(0.0, 1.0, 0.0),
+                            offset,
+                            options);
 
-                case ViewKind.Flange:
-                    created += CreateHorizontalChain(
-                        analysis.View,
-                        bounds.MinX,
-                        bounds.MaxY,
-                        analysis.HolePoints,
-                        new Vector(0.0, 1.0, 0.0),
-                        offset,
-                        options);
+                        created += CreateVerticalChain(
+                            analysis.View,
+                            bounds.MinX,
+                            bounds.MaxY,
+                            group.Points,
+                            new Vector(-1.0, 0.0, 0.0),
+                            offset,
+                            options);
+                        break;
 
-                    created += CreateFlangeCentrelineDimensions(analysis, offset, options);
-                    break;
+                    case ViewKind.Flange:
+                        created += CreateHorizontalChain(
+                            analysis.View,
+                            bounds.MinX,
+                            bounds.MaxY,
+                            group.Points,
+                            new Vector(0.0, 1.0, 0.0),
+                            offset,
+                            options);
 
-                case ViewKind.End:
-                    created += CreateHorizontalChain(
-                        analysis.View,
-                        bounds.CentreX,
-                        bounds.MaxY,
-                        analysis.HolePoints,
-                        new Vector(0.0, 1.0, 0.0),
-                        offset,
-                        options);
+                        created += CreateFlangeCentrelineDimensions(analysis, group, offset, options);
+                        break;
 
-                    created += CreateVerticalChain(
-                        analysis.View,
-                        bounds.MinX,
-                        bounds.MaxY,
-                        analysis.HolePoints,
-                        new Vector(-1.0, 0.0, 0.0),
-                        offset,
-                        options);
-                    break;
+                    case ViewKind.End:
+                        created += CreateHorizontalChain(
+                            analysis.View,
+                            bounds.CentreX,
+                            bounds.MaxY,
+                            group.Points,
+                            new Vector(0.0, 1.0, 0.0),
+                            offset,
+                            options);
+
+                        created += CreateVerticalChain(
+                            analysis.View,
+                            bounds.MinX,
+                            bounds.MaxY,
+                            group.Points,
+                            new Vector(-1.0, 0.0, 0.0),
+                            offset,
+                            options);
+                        break;
+                }
             }
 
             return created;
         }
 
-        private static int CreateFlangeCentrelineDimensions(ViewAnalysis analysis, double offset, DimensioningOptions options)
+        private static int CreateFlangeCentrelineDimensions(
+            ViewAnalysis analysis,
+            HoleGroup group,
+            double offset,
+            DimensioningOptions options)
         {
             var bounds = analysis.MainPartBounds;
-            var created = 0;
+            var referenceX = Clamp(group.CentreX, bounds.MinX, bounds.MaxX);
 
-            if (analysis.HoleGroups.Count == 0)
-            {
-                return CreateVerticalChain(
-                    analysis.View,
-                    bounds.CentreX,
-                    bounds.CentreY,
-                    analysis.HolePoints,
-                    new Vector(-1.0, 0.0, 0.0),
-                    offset,
-                    options);
-            }
+            // Dimension transverse flange geometry from the flange centreline and keep
+            // the dimension beside the connection it belongs to.
+            var direction = referenceX <= bounds.CentreX
+                ? new Vector(-1.0, 0.0, 0.0)
+                : new Vector(1.0, 0.0, 0.0);
 
-            foreach (var group in analysis.HoleGroups)
-            {
-                if (group.Points.Count == 0)
-                    continue;
-
-                // Put the flange-centre datum beside the connection it belongs to,
-                // rather than using a centre point at the end of the whole member.
-                var referenceX = Clamp(group.CentreX, bounds.MinX, bounds.MaxX);
-
-                // Keep the dimension on the nearest longitudinal side of the connection.
-                var direction = referenceX <= bounds.CentreX
-                    ? new Vector(-1.0, 0.0, 0.0)
-                    : new Vector(1.0, 0.0, 0.0);
-
-                created += CreateVerticalChain(
-                    analysis.View,
-                    referenceX,
-                    bounds.CentreY,
-                    group.Points,
-                    direction,
-                    offset,
-                    options);
-            }
-
-            return created;
+            return CreateVerticalChain(
+                analysis.View,
+                referenceX,
+                bounds.CentreY,
+                group.Points,
+                direction,
+                offset,
+                options);
         }
 
         private static int CreateHorizontalChain(
