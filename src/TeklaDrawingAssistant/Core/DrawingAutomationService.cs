@@ -13,6 +13,7 @@ namespace TeklaDrawingAssistant.Core
         private readonly FabricationContextBuilder _contextBuilder;
         private readonly DimensionRuleEngine _ruleEngine;
         private readonly ViewCreationPlanner _viewCreationPlanner;
+        private readonly BeamEndViewEnsurer _endViewEnsurer;
 
         public DrawingAutomationService(TeklaSession session)
         {
@@ -21,6 +22,7 @@ namespace TeklaDrawingAssistant.Core
             _contextBuilder = new FabricationContextBuilder();
             _ruleEngine = new DimensionRuleEngine();
             _viewCreationPlanner = new ViewCreationPlanner(session.Model);
+            _endViewEnsurer = new BeamEndViewEnsurer(session.Model);
         }
 
         public DrawingAnalysisResult Analyze()
@@ -101,6 +103,11 @@ namespace TeklaDrawingAssistant.Core
 
             var created = _viewCreationPlanner.RebuildRequiredViews(analysis, messages);
 
+            // The general face classifier is useful for top/bottom/web decisions, but end
+            // plates need a stronger test. Detect them by physical position along the main
+            // member and build the section through the actual plate centre.
+            var endSections = _endViewEnsurer.EnsureEndViews(analysis, messages);
+
             foreach (var message in messages)
                 log.AppendLine("  " + message);
 
@@ -109,7 +116,8 @@ namespace TeklaDrawingAssistant.Core
 
             var finalAnalysis = _analyzer.Analyze();
             log.AppendLine();
-            log.AppendLine($"Created {created} required view(s).");
+            log.AppendLine($"General views created: {created}.");
+            log.AppendLine($"End sections detected/rebuilt: {endSections}.");
             log.AppendLine($"Final views: {finalAnalysis.Views.Count}");
             log.AppendLine("Dimension creation is currently disabled while view setup is being tuned.");
 
