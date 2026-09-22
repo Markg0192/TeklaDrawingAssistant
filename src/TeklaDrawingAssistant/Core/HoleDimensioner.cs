@@ -26,12 +26,13 @@ namespace TeklaDrawingAssistant.Core
 
             var created = 0;
             var bounds = analysis.MainPartBounds;
-            var baseOffset = GetAdaptiveOffset(bounds, options);
+            var baseOffset = DimensionLayout.GetBaseOffset(analysis);
+            var laneSpacing = DimensionLayout.GetLaneSpacing(analysis);
 
             for (var index = 0; index < groups.Count; index++)
             {
                 var group = groups[index];
-                var offset = baseOffset + index * 8.0;
+                var offset = baseOffset + index * laneSpacing;
 
                 switch (analysis.Kind)
                 {
@@ -102,8 +103,6 @@ namespace TeklaDrawingAssistant.Core
             var bounds = analysis.MainPartBounds;
             var referenceX = Clamp(group.CentreX, bounds.MinX, bounds.MaxX);
 
-            // Dimension transverse flange geometry from the flange centreline and keep
-            // the dimension beside the connection it belongs to.
             var direction = referenceX <= bounds.CentreX
                 ? new Vector(-1.0, 0.0, 0.0)
                 : new Vector(1.0, 0.0, 0.0);
@@ -178,18 +177,6 @@ namespace TeklaDrawingAssistant.Core
             var handler = new StraightDimensionSetHandler();
             var dimension = handler.CreateDimensionSet(view, list, direction, offset);
             return dimension == null ? 0 : 1;
-        }
-
-        private static double GetAdaptiveOffset(ViewBounds bounds, DimensioningOptions options)
-        {
-            var width = Math.Abs(bounds.Width);
-            var height = Math.Abs(bounds.Height);
-            var smallerProjectedSize = Math.Min(width, height);
-
-            var scaledOffset = smallerProjectedSize * options.DimensionOffsetScale;
-            var offset = Math.Max(options.DimensionOffset, scaledOffset);
-
-            return Math.Min(offset, options.MaximumDimensionOffset);
         }
 
         private static double Clamp(double value, double minimum, double maximum)
