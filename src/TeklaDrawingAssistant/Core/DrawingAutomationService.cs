@@ -14,7 +14,9 @@ namespace TeklaDrawingAssistant.Core
         private readonly DimensionRuleEngine _ruleEngine;
         private readonly FlangeOnlyViewCreationPlanner _flangeViewPlanner;
         private readonly ControlledEndViewBuilder _endViewBuilder;
+        private readonly GeneratedViewPostProcessor _viewPostProcessor;
         private readonly FittingSetoutPlanner _setoutPlanner;
+        private readonly FittingDimensioner _fittingDimensioner;
 
         public DrawingAutomationService(TeklaSession session)
         {
@@ -24,7 +26,9 @@ namespace TeklaDrawingAssistant.Core
             _ruleEngine = new DimensionRuleEngine();
             _flangeViewPlanner = new FlangeOnlyViewCreationPlanner(session.Model);
             _endViewBuilder = new ControlledEndViewBuilder(session.Model);
+            _viewPostProcessor = new GeneratedViewPostProcessor();
             _setoutPlanner = new FittingSetoutPlanner(session.Model);
+            _fittingDimensioner = new FittingDimensioner(session.Model);
         }
 
         public DrawingAnalysisResult Analyze()
@@ -94,28 +98,35 @@ namespace TeklaDrawingAssistant.Core
         public string BuildViewsOnly()
         {
             var log = new StringBuilder();
-            var messages = new System.Collections.Generic.List<string>();
+            var viewMessages = new System.Collections.Generic.List<string>();
+            var dimensionMessages = new System.Collections.Generic.List<string>();
 
             var analysis = _analyzer.Analyze();
             log.AppendLine($"Drawing: {analysis.Drawing.Mark} - {analysis.Drawing.Name}");
             log.AppendLine($"Starting views: {analysis.Views.Count}");
             log.AppendLine();
-            log.AppendLine("VIEW CREATION ONLY");
+            log.AppendLine("DRAWING BUILD");
             log.AppendLine(new string('-', 40));
 
-            var flangeViews = _flangeViewPlanner.RebuildFlangeViews(analysis, messages);
+            var flangeViews = _flangeViewPlanner.RebuildFlangeViews(analysis, viewMessages);
 
             analysis = _analyzer.Analyze();
-            var endViews = _endViewBuilder.Build(analysis, messages);
+            var endViews = _endViewBuilder.Build(analysis, viewMessages);
 
-            foreach (var message in messages)
-                log.AppendLine("  " + message);
+            analysis = _analyzer.Analyze();
+            _viewPostProcessor.Apply(analysis, viewMessages);
 
             analysis.Drawing.CommitChanges();
-            _session.DrawingHandler.SaveActiveDrawing();
 
             var finalAnalysis = _analyzer.Analyze();
             var setoutPlan = _setoutPlanner.Build(finalAnalysis);
+            var dimensionsCreated = _fittingDimensioner.Dimension(finalAnalysis, setoutPlan, dimensionMessages);
+
+            finalAnalysis.Drawing.CommitChanges();
+            _session.DrawingHandler.SaveActiveDrawing();
+
+            foreach (var message in viewMessages)
+                log.AppendLine("  " + message);
 
             log.AppendLine();
             log.AppendLine($"Flange views created: {flangeViews}.");
@@ -126,7 +137,12 @@ namespace TeklaDrawingAssistant.Core
             AppendFittingSetoutPlan(log, setoutPlan);
 
             log.AppendLine();
-            log.AppendLine("Dimension creation is still disabled. The set-out plan above is the next thing to validate before any Tekla dimensions are inserted.");
+            foreach (var message in dimensionMessages)
+                log.AppendLine("  " + message);
+
+            log.AppendLine();
+            log.AppendLine("Straight fitting dimension sets created: " + dimensionsCreated + ".");
+            log.AppendLine("Current pass dimensions fitting set-out and hole patterns only; marks/welds/cuts remain for later stages.");
 
             return log.ToString();
         }
