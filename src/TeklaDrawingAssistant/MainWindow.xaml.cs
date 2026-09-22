@@ -1,7 +1,6 @@
 using System;
 using System.Windows;
 using TeklaDrawingAssistant.Core;
-using TeklaDrawingAssistant.Models;
 using TeklaDrawingAssistant.Tekla;
 
 namespace TeklaDrawingAssistant
@@ -60,17 +59,11 @@ namespace TeklaDrawingAssistant
             });
         }
 
-        private void DimensionButton_Click(object sender, RoutedEventArgs e)
+        private void BuildViewsButton_Click(object sender, RoutedEventArgs e)
         {
             RunSafely(() =>
             {
-                var options = new DimensioningOptions
-                {
-                    DeleteExistingStraightDimensions = DeleteExistingCheckBox.IsChecked == true,
-                    SaveDrawingAfterRun = SaveDrawingCheckBox.IsChecked == true
-                };
-
-                LogTextBox.Text = _service.DimensionHoles(options);
+                LogTextBox.Text = _service.BuildViewsOnly();
                 UpdateConnectionStatus();
             });
         }
