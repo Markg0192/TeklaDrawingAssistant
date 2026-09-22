@@ -10,14 +10,6 @@ using DrawingView = Tekla.Structures.Drawing.View;
 
 namespace TeklaDrawingAssistant.Core
 {
-    /// <summary>
-    /// Presentation/layout pass for generated views.
-    ///
-    /// Apply() runs immediately after view creation to strip unwanted grids and give
-    /// the end sections some working space.
-    /// FinaliseLayout() runs after dimensions/marks have been generated and places the
-    /// views into their final fabrication layout with generous annotation corridors.
-    /// </summary>
     public sealed class GeneratedViewPostProcessor
     {
         private const double PreDimensionEndGap = 14.0;
@@ -35,6 +27,7 @@ namespace TeklaDrawingAssistant.Core
 
             if (baseView != null)
             {
+                MatchGeneratedViewScales(analysis, baseView, messages);
                 MoveEndViewOutward(analysis.Drawing, analysis.Views, "A-A", true, PreDimensionEndGap);
                 MoveEndViewOutward(analysis.Drawing, analysis.Views, "B-B", false, PreDimensionEndGap);
             }
@@ -44,7 +37,7 @@ namespace TeklaDrawingAssistant.Core
             if (cleaned > 0)
                 messages?.Add("Post-process: removed/hid grids and grid lines from " + cleaned + " flange view(s).");
 
-            messages?.Add("Post-process: reserved extra clearance around end views before dimensioning.");
+            messages?.Add("Post-process: generated top/bottom/end views forced to retained main-view scale.");
         }
 
         public void FinaliseLayout(DrawingAnalysisResult analysis, IList<string> messages)
@@ -56,9 +49,8 @@ namespace TeklaDrawingAssistant.Core
             if (baseView == null)
                 return;
 
-            // Grid representations occasionally reappear when Tekla updates the generated
-            // top/bottom views. Strip them again in the final pass.
             CleanGeneratedFlangeGrids(analysis);
+            MatchGeneratedViewScales(analysis, baseView, messages);
 
             PlaceFlangeView(analysis.Drawing, baseView, FindView(analysis.Views, "TDA_TOP"), true);
             PlaceFlangeView(analysis.Drawing, baseView, FindView(analysis.Views, "TDA_BOTTOM"), false);
@@ -67,6 +59,37 @@ namespace TeklaDrawingAssistant.Core
 
             analysis.Drawing.CommitChanges();
             messages?.Add("Final layout: rebuilt annotation corridors after dimensions; top/bottom views spaced vertically and A-A/B-B spaced outward from their member ends.");
+        }
+
+        private static void MatchGeneratedViewScales(
+            DrawingAnalysisResult analysis,
+            ViewAnalysis baseView,
+            IList<string> messages)
+        {
+            if (baseView == null || baseView.View == null || baseView.View.Attributes == null)
+                return;
+
+            var scale = baseView.View.Attributes.Scale;
+            if (scale <= 0.0)
+                return;
+
+            foreach (var view in analysis.Views)
+            {
+                if (view.View == null || view.View.Attributes == null || !IsGenerated(view.View))
+                    continue;
+
+                if (Math.Abs(view.View.Attributes.Scale - scale) <= 0.0001)
+                    continue;
+
+                var old = view.View.Attributes.Scale;
+                view.View.Attributes.Scale = scale;
+                view.View.Modify();
+
+                messages?.Add(
+                    "Scale corrected: " + FriendlyName(view.View) +
+                    " " + old.ToString("0.###") + " -> " + scale.ToString("0.###") +
+                    " to match retained main view.");
+            }
         }
 
         private static int CleanGeneratedFlangeGrids(DrawingAnalysisResult analysis)
@@ -93,9 +116,6 @@ namespace TeklaDrawingAssistant.Core
         {
             var changed = false;
 
-            // Some Tekla-generated views expose GridLine objects directly, not only as
-            // children of Grid. Hide these first so the red grid lines cannot survive a
-            // parent-grid delete/update.
             var directLines = view.GetObjects(new[] { typeof(DrawingGridLine) });
             while (directLines.MoveNext())
             {
@@ -270,6 +290,15 @@ namespace TeklaDrawingAssistant.Core
         {
             var name = (view == null ? string.Empty : view.Name ?? string.Empty).Trim().ToUpperInvariant();
             return name.StartsWith("TDA_") || name == "A-A" || name == "B-B";
+        }
+
+        private static string FriendlyName(DrawingView view)
+        {
+            if (view == null)
+                return "<null>";
+
+            var name = (view.Name ?? string.Empty).Trim();
+            return string.IsNullOrWhiteSpace(name) ? "unnamed generated view" : name;
         }
     }
 }
