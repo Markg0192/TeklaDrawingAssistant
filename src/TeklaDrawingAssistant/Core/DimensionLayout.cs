@@ -1,43 +1,55 @@
 using System;
 using TeklaDrawingAssistant.Models;
+using Tekla.Structures.Drawing;
 
 namespace TeklaDrawingAssistant.Core
 {
     /// <summary>
-    /// Dimension distances in the Tekla drawing API are paper millimetres.
-    /// Keep dimensions close enough to read as belonging to the feature while still
-    /// scaling gently with the view size.
+    /// Tekla's CreateDimensionSet distance is supplied in view/model units.
+    /// Choose the visual spacing in paper millimetres, then multiply by the
+    /// drawing-view scale so 1:10, 1:15 and 1:20 drawings look consistent.
+    ///
+    /// These values are deliberately tight. Final collision/layout work happens
+    /// after all annotations have been created.
     /// </summary>
     public static class DimensionLayout
     {
+        private const double BasePaperOffset = 4.0;
+        private const double PartPaperOffset = 3.5;
+        private const double LanePaperSpacing = 3.5;
+        private const double EndPlatePaperOffset = 4.0;
+
         public static double GetBaseOffset(ViewAnalysis analysis)
         {
-            if (analysis == null || analysis.View == null)
-                return 7.0;
-
-            var width = Math.Abs(analysis.View.Width);
-            var height = Math.Abs(analysis.View.Height);
-            var shortSide = Math.Min(width, height);
-
-            if (shortSide < 0.001)
-                return 7.0;
-
-            return Clamp(shortSide * 0.08, 6.0, 12.0);
+            return ToViewDistance(analysis, BasePaperOffset);
         }
 
         public static double GetPartOffset(ViewAnalysis analysis)
         {
-            return Math.Max(5.0, GetBaseOffset(analysis) * 0.75);
+            return ToViewDistance(analysis, PartPaperOffset);
         }
 
         public static double GetLaneSpacing(ViewAnalysis analysis)
         {
-            return Clamp(GetBaseOffset(analysis) * 0.55, 4.5, 7.0);
+            return ToViewDistance(analysis, LanePaperSpacing);
         }
 
-        private static double Clamp(double value, double minimum, double maximum)
+        public static double GetEndPlateOffset(ViewAnalysis analysis)
         {
-            return Math.Max(minimum, Math.Min(maximum, value));
+            return ToViewDistance(analysis, EndPlatePaperOffset);
+        }
+
+        public static double ToViewDistance(ViewAnalysis analysis, double paperMillimetres)
+        {
+            var scale = GetScale(analysis == null ? null : analysis.View);
+            return Math.Max(1.0, paperMillimetres * scale);
+        }
+
+        private static double GetScale(View view)
+        {
+            return view != null && view.Attributes != null && view.Attributes.Scale > 0.0
+                ? view.Attributes.Scale
+                : 1.0;
         }
     }
 }
