@@ -353,8 +353,6 @@ namespace TeklaDrawingAssistant.Core
             if (resolved != null && IsPartVisible(resolved, part.Identifier.ID))
                 return resolved;
 
-            // If the planner selected a generic END SECTION, never blindly use the first end.
-            // Choose the end section that actually contains this fitting.
             if (requirement.ViewKind == ViewKind.End ||
                 (requirement.ViewName ?? string.Empty).IndexOf("END", StringComparison.OrdinalIgnoreCase) >= 0)
             {
@@ -385,9 +383,18 @@ namespace TeklaDrawingAssistant.Core
                 var dA = Math.Abs(centreX - main.MinimumPoint.X);
                 var dB = Math.Abs(centreX - main.MaximumPoint.X);
 
-                if (dA <= endZone)
+                // Being near an end is not enough. Only a thin transverse plate is an
+                // end plate. This prevents an end-adjacent gusset/web plate being forced
+                // into A-A/B-B merely because its centre sits inside the end search zone.
+                var sx = Math.Abs(fitting.MaximumPoint.X - fitting.MinimumPoint.X);
+                var sy = Math.Abs(fitting.MaximumPoint.Y - fitting.MinimumPoint.Y);
+                var sz = Math.Abs(fitting.MaximumPoint.Z - fitting.MinimumPoint.Z);
+                var transverse = Math.Max(sy, sz);
+                var transverseEndPlate = sx <= Math.Max(60.0, transverse * 0.65);
+
+                if (transverseEndPlate && dA <= endZone + sx * 0.5)
                     return FittingFamily.EndA;
-                if (dB <= endZone)
+                if (transverseEndPlate && dB <= endZone + sx * 0.5)
                     return FittingFamily.EndB;
 
                 var bottomDistance = Math.Min(
