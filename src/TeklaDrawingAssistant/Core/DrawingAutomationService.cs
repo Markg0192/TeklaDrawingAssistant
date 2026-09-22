@@ -14,6 +14,7 @@ namespace TeklaDrawingAssistant.Core
         private readonly DimensionRuleEngine _ruleEngine;
         private readonly ViewCreationPlanner _viewCreationPlanner;
         private readonly BeamEndViewEnsurer _endViewEnsurer;
+        private readonly EndSectionDiagnosticProbe _endSectionDiagnosticProbe;
 
         public DrawingAutomationService(TeklaSession session)
         {
@@ -23,6 +24,7 @@ namespace TeklaDrawingAssistant.Core
             _ruleEngine = new DimensionRuleEngine();
             _viewCreationPlanner = new ViewCreationPlanner(session.Model);
             _endViewEnsurer = new BeamEndViewEnsurer(session.Model);
+            _endSectionDiagnosticProbe = new EndSectionDiagnosticProbe(session.Model);
         }
 
         public DrawingAnalysisResult Analyze()
@@ -107,6 +109,13 @@ namespace TeklaDrawingAssistant.Core
             // plates need a stronger test. Detect them by physical position along the main
             // member and build the section through the actual plate centre.
             var endSections = _endViewEnsurer.EnsureEndViews(analysis, messages);
+
+            // If the normal end-section route still fails, run a deliberately verbose probe.
+            // It logs every plate candidate, source-view coordinates, cut line, depth,
+            // generated restriction box and the actual model IDs Tekla put in each temporary
+            // section. It also tries a few alternate cuts/depths and keeps one if it succeeds.
+            var rescuedEndSections = _endSectionDiagnosticProbe.DiagnoseAndRescue(analysis, messages);
+            endSections += rescuedEndSections;
 
             foreach (var message in messages)
                 log.AppendLine("  " + message);
