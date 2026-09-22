@@ -15,7 +15,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,14">
             <TextBlock Text="Tekla Drawing Assistant" FontSize="24" FontWeight="SemiBold"/>
-            <TextBlock Text="Rule-based drawing analysis and hole dimensioning for Tekla Structures 2023."
+            <TextBlock Text="Face-aware fabrication drawing setup and dimensioning for Tekla Structures 2023."
                        Margin="0,4,0,0" Foreground="DimGray"/>
         </StackPanel>
 
@@ -43,7 +43,7 @@
                 </Grid.ColumnDefinitions>
 
                 <Button Grid.Column="0" x:Name="AnalyzeButton" Content="Analyze Drawing" Padding="18,8" Margin="0,0,10,0" Click="AnalyzeButton_Click"/>
-                <Button Grid.Column="1" x:Name="DimensionButton" Content="Rebuild Hole Dimensions" Padding="18,8" Margin="0,0,18,0" Click="DimensionButton_Click"/>
+                <Button Grid.Column="1" x:Name="DimensionButton" Content="Tidy Drawing" Padding="18,8" Margin="0,0,18,0" Click="DimensionButton_Click"/>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,18,0">
                     <TextBlock Text="Min offset (mm)" VerticalAlignment="Center" Margin="0,0,6,0"/>
