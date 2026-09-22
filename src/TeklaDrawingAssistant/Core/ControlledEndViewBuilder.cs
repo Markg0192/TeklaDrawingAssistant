@@ -744,22 +744,7 @@ namespace TeklaDrawingAssistant.Core
             return name.StartsWith("TDA_") || name.StartsWith("AUTO -");
         }
 
-        private static DrawingView.ViewAttributes CreateViewAttributes(DrawingView source)
-        {
-            var attributes = new DrawingView.ViewAttributes();
-            if (source != null && source.Attributes != null)
-            {
-                if (source.Attributes.Scale > 0.0)
-                    attributes.Scale = source.Attributes.Scale;
-                attributes.Shortening = source.Attributes.Shortening;
-            }
-            attributes.FixedViewPlacing = true;
-            attributes.ViewExtensionForNeighbourParts = 0.0;
-            attributes.TagsAttributes = new DrawingView.ViewMarkTagsAttributes();
-            return attributes;
-        }
-
-        private static string Describe(ModelPart part)
+		private static string Describe(ModelPart part)
         {
             var profile = part.Profile == null ? string.Empty : part.Profile.ProfileString;
             return part.Identifier.ID + (string.IsNullOrWhiteSpace(profile) ? string.Empty : " (" + profile + ")");
