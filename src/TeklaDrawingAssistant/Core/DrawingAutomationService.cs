@@ -17,6 +17,7 @@ namespace TeklaDrawingAssistant.Core
         private readonly GeneratedViewPostProcessor _viewPostProcessor;
         private readonly FittingSetoutPlanner _setoutPlanner;
         private readonly FittingDimensioner _fittingDimensioner;
+        private readonly MainPartFeatureDimensioner _mainPartFeatureDimensioner;
         private readonly EndPlateDimensioner _endPlateDimensioner;
 
         public DrawingAutomationService(TeklaSession session)
@@ -30,6 +31,7 @@ namespace TeklaDrawingAssistant.Core
             _viewPostProcessor = new GeneratedViewPostProcessor();
             _setoutPlanner = new FittingSetoutPlanner(session.Model);
             _fittingDimensioner = new FittingDimensioner(session.Model);
+            _mainPartFeatureDimensioner = new MainPartFeatureDimensioner(session.Model);
             _endPlateDimensioner = new EndPlateDimensioner(session.Model);
         }
 
@@ -123,6 +125,11 @@ namespace TeklaDrawingAssistant.Core
             var setoutPlan = _setoutPlanner.Build(dimensionAnalysis);
             _fittingDimensioner.Dimension(dimensionAnalysis, setoutPlan, dimensionMessages);
 
+            // Main-member fabrication features are separate from fitting set-out:
+            // holes through the web/top/bottom flange plus local boolean cuts/notches.
+            var mainFeatureAnalysis = _analyzer.Analyze();
+            _mainPartFeatureDimensioner.Dimension(mainFeatureAnalysis, dimensionMessages);
+
             // End sections have their own fabrication convention. Replace any generic
             // dimensions in A-A/B-B with the tightly controlled end-plate set-out.
             var endDimensionAnalysis = _analyzer.Analyze();
@@ -156,8 +163,9 @@ namespace TeklaDrawingAssistant.Core
             log.AppendLine();
             log.AppendLine("Final straight dimension sets on drawing: " + finalDimensionCount + ".");
             log.AppendLine("End sections use a dedicated end-plate dimensioning pass after the generic fitting dimensions.");
+            log.AppendLine("Main-part hole groups are dimensioned on their owning web/top/bottom face; local boolean cuts/notches are dimensioned locally.");
             log.AppendLine("Final view layout is applied after dimensions so annotation corridors are preserved.");
-            log.AppendLine("Current pass dimensions fitting set-out and hole patterns only; marks/welds/cuts remain for later stages.");
+            log.AppendLine("Part marks, weld marks and other misc annotations remain for later stages.");
 
             return log.ToString();
         }
