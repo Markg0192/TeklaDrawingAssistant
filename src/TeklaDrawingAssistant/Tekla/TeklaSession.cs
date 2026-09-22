@@ -20,7 +20,7 @@ namespace TeklaDrawingAssistant.Tekla
         public Drawing GetActiveDrawing()
         {
             if (!IsConnected)
-                throw new InvalidOperationException("Could not connect to Tekla Structures 2026. Make sure a model is open.");
+                throw new InvalidOperationException("Could not connect to Tekla Structures 2023. Make sure a model is open.");
 
             var drawing = DrawingHandler.GetActiveDrawing();
             if (drawing == null)
