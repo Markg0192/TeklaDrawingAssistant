@@ -37,7 +37,7 @@ namespace TeklaDrawingAssistant
         {
             if (_session == null || !_session.IsConnected)
             {
-                ConnectionText.Text = "Not connected - open Tekla Structures 2026 with a model loaded.";
+                ConnectionText.Text = "Not connected - open Tekla Structures 2023 with a model loaded.";
                 return;
             }
 
