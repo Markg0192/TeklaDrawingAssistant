@@ -19,12 +19,13 @@ namespace TeklaDrawingAssistant.Core
 {
     /// <summary>
     /// Builds only the extra flange views. End sections are deliberately handled by
-    /// OutsideInEndSectionBuilder so there is one authority for end-view direction/cuts.
+    /// ControlledEndViewBuilder so there is one authority for end-view direction/cuts.
     /// </summary>
     public sealed class FlangeOnlyViewCreationPlanner
     {
         private const double ParallelTolerance = 0.90;
-        private const double ViewGap = 12.0;
+        // Paper-space corridor deliberately reserved for the dimensioning stage.
+        private const double ViewGap = 32.0;
         private readonly Model _model;
 
         public FlangeOnlyViewCreationPlanner(Model model)
@@ -85,7 +86,7 @@ namespace TeklaDrawingAssistant.Core
             var attributes = CreateAttributes(source.View);
             var insertion = new Point(
                 source.View.Origin.X,
-                source.View.Origin.Y + (top ? 1.0 : -1.0) * (source.View.Height + 25.0),
+                source.View.Origin.Y + (top ? 1.0 : -1.0) * (source.View.Height + ViewGap),
                 0.0);
 
             DrawingView view;
@@ -108,7 +109,7 @@ namespace TeklaDrawingAssistant.Core
             view.Modify();
             analysis.Drawing.CommitChanges();
 
-            messages?.Add("Created " + (top ? "TOP" : "BOTTOM") + " flange view with no visible name, grids, marks or neighbouring steel.");
+            messages?.Add("Created " + (top ? "TOP" : "BOTTOM") + " flange view with a reserved dimension corridor.");
             return view;
         }
 
