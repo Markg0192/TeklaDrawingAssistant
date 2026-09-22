@@ -261,7 +261,8 @@ namespace TeklaDrawingAssistant.Core
 
             messages?.Add(
                 "Created end section " + (startEnd ? "A-A" : "B-B") +
-                " through detected plate " + Describe(candidate.Part) + ".");
+                " through detected plate " + Describe(candidate.Part) +
+                " looking from outside toward the member.");
 
             return sectionView;
         }
@@ -277,8 +278,12 @@ namespace TeklaDrawingAssistant.Core
             {
                 var x = featureCentre.X;
                 var margin = Math.Max(40.0, Math.Abs(mainBounds.Height) * 0.25);
-                start = new Point(x, mainBounds.MinY - margin, 0.0);
-                end = new Point(x, mainBounds.MaxY + margin, 0.0);
+
+                // Section line direction controls the view direction. For the start end
+                // we want to stand outside the member and look inward. The finish end is
+                // the opposite direction.
+                start = new Point(x, mainBounds.MaxY + margin, 0.0);
+                end = new Point(x, mainBounds.MinY - margin, 0.0);
 
                 if (!startEnd)
                 {
@@ -291,8 +296,9 @@ namespace TeklaDrawingAssistant.Core
             {
                 var y = featureCentre.Y;
                 var margin = Math.Max(40.0, Math.Abs(mainBounds.Width) * 0.25);
-                start = new Point(mainBounds.MinX - margin, y, 0.0);
-                end = new Point(mainBounds.MaxX + margin, y, 0.0);
+
+                start = new Point(mainBounds.MaxX + margin, y, 0.0);
+                end = new Point(mainBounds.MinX - margin, y, 0.0);
 
                 if (startEnd)
                 {
