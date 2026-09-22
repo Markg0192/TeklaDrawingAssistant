@@ -115,18 +115,23 @@ namespace TeklaDrawingAssistant.Core
 
             analysis = _analyzer.Analyze();
             _viewPostProcessor.Apply(analysis, viewMessages);
-
             analysis.Drawing.CommitChanges();
 
-            var finalAnalysis = _analyzer.Analyze();
-            var setoutPlan = _setoutPlanner.Build(finalAnalysis);
-            var dimensionsCreated = _fittingDimensioner.Dimension(finalAnalysis, setoutPlan, dimensionMessages);
+            var dimensionAnalysis = _analyzer.Analyze();
+            var setoutPlan = _setoutPlanner.Build(dimensionAnalysis);
+            var dimensionsCreated = _fittingDimensioner.Dimension(dimensionAnalysis, setoutPlan, dimensionMessages);
 
-            finalAnalysis.Drawing.CommitChanges();
+            // Dimensions/marks change the amount of clear paper needed around each view.
+            // Do a final deterministic layout pass only after annotation generation.
+            var finalLayoutAnalysis = _analyzer.Analyze();
+            _viewPostProcessor.FinaliseLayout(finalLayoutAnalysis, viewMessages);
+            finalLayoutAnalysis.Drawing.CommitChanges();
             _session.DrawingHandler.SaveActiveDrawing();
 
             foreach (var message in viewMessages)
                 log.AppendLine("  " + message);
+
+            var finalAnalysis = _analyzer.Analyze();
 
             log.AppendLine();
             log.AppendLine($"Flange views created: {flangeViews}.");
@@ -142,6 +147,7 @@ namespace TeklaDrawingAssistant.Core
 
             log.AppendLine();
             log.AppendLine("Straight fitting dimension sets created: " + dimensionsCreated + ".");
+            log.AppendLine("Final view layout is applied after dimensions so annotation corridors are preserved.");
             log.AppendLine("Current pass dimensions fitting set-out and hole patterns only; marks/welds/cuts remain for later stages.");
 
             return log.ToString();
