@@ -12,12 +12,18 @@ using ModelPart = Tekla.Structures.Model.Part;
 namespace TeklaDrawingAssistant.Core
 {
     /// <summary>
-    /// Dedicated longitudinal set-out for fittings hanging from the bottom flange
-    /// in the retained web/elevation view.
+    /// Dedicated set-out for fittings hanging from the bottom flange in the retained
+    /// web/elevation view.
     ///
-    /// These are intentionally grouped onto one chain BELOW the member so the
-    /// dimensions do not run through the steel. Plate/gusset edges are used here;
-    /// local hole-pattern dimensions remain owned by the normal fitting/hole passes.
+    /// Fabrication rule:
+    /// - locate these fittings by their HOLES, not by plate edges;
+    /// - one common horizontal chain below the member;
+    /// - one common vertical chain from the bottom-flange datum to the hole rows;
+    /// - include member start/finish in the horizontal chain for the closing dimension.
+    ///
+    /// Fittings without holes are deliberately ignored by this pass. They can be handled
+    /// later by a specific no-hole fitting rule rather than silently mixing plate-edge and
+    /// hole-centre conventions on the same drawing.
     /// </summary>
     public sealed class BottomFlangeFittingDimensioner
     {
@@ -46,7 +52,9 @@ namespace TeklaDrawingAssistant.Core
             }
 
             var main = view.MainPartBounds;
-            var fittings = new List<ViewBounds>();
+            var holePoints = new List<Point>();
+            var fittingCount = 0;
+            var boltGroups = new HashSet<int>();
 
             var assembly = analysis.MainPart.GetAssembly();
             if (assembly != null)
@@ -58,44 +66,171 @@ namespace TeklaDrawingAssistant.Core
                         continue;
 
                     var bounds = _geometryReader.GetPartBounds(view.View, part.Identifier);
-                    if (bounds == null)
+                    if (bounds == null || !IsBottomFlangeFitting(bounds, main))
                         continue;
 
-                    // A bottom-flange fitting touches the lower edge of the main member
-                    // and projects below it in the retained fabrication elevation.
-                    var touchesBottom = bounds.MaxY >= main.MinY - EdgeTolerance &&
-                                        bounds.MaxY <= main.MinY + EdgeTolerance;
-                    var hangsBelow = bounds.MinY < main.MinY - CoordinateTolerance;
+                    var attached = GetAttachedBoltIds(part);
+                    if (attached.Count == 0)
+                        continue;
 
-                    if (touchesBottom && hangsBelow)
-                        fittings.Add(bounds);
+                    var projected = ProjectBoltGroups(view.View, attached);
+                    if (projected.Count == 0)
+                        continue;
+
+                    fittingCount++;
+                    foreach (var group in projected)
+                    {
+                        boltGroups.Add(group.ModelIdentifierId);
+                        holePoints.AddRange(group.Points);
+                    }
                 }
             }
 
-            if (fittings.Count == 0)
+            if (holePoints.Count == 0)
             {
-                messages?.Add("BOTTOM FLANGE SETOUT: no hanging bottom-flange fittings found in BASE / WEB.");
+                messages?.Add("BOTTOM FLANGE SETOUT: no hole-centred bottom-flange fitting set-out required.");
                 return 0;
             }
 
-            var points = new List<Point>
+            var created = 0;
+
+            // ONE horizontal chain: beam start -> all unique hole stations -> beam finish.
+            // It projects below the member so extension lines do not run through the steel.
+            var horizontalPoints = new List<Point>
             {
                 new Point(main.MinX, main.MinY, 0.0)
             };
 
-            foreach (var fitting in fittings.OrderBy(bounds => bounds.MinX))
+            horizontalPoints.AddRange(UniqueByX(holePoints));
+            horizontalPoints.Add(new Point(main.MaxX, main.MinY, 0.0));
+
+            created += CreateDimension(
+                view.View,
+                horizontalPoints,
+                new Vector(0.0, -1.0, 0.0),
+                DimensionLayout.GetBaseOffset(view),
+                compareX: true);
+
+            // ONE vertical chain: bottom flange -> all unique hole rows. Use the left-most
+            // hole column as the extension-line location so the dimension remains local.
+            var leftMostX = holePoints.Min(point => point.X);
+            var verticalPoints = new List<Point>
             {
-                // Use both edges so the fitting width is included in the common chain.
-                points.Add(new Point(fitting.MinX, fitting.MinY, 0.0));
-                points.Add(new Point(fitting.MaxX, fitting.MinY, 0.0));
+                new Point(leftMostX, main.MinY, 0.0)
+            };
+
+            verticalPoints.AddRange(
+                UniqueByY(holePoints)
+                    .Select(point => new Point(leftMostX, point.Y, 0.0)));
+
+            created += CreateDimension(
+                view.View,
+                verticalPoints,
+                new Vector(-1.0, 0.0, 0.0),
+                DimensionLayout.GetLocalFeatureOffset(view),
+                compareX: false);
+
+            analysis.Drawing.CommitChanges();
+            messages?.Add(
+                "BOTTOM FLANGE SETOUT: " + fittingCount +
+                " holed fitting(s), bolt groups [" + string.Join(",", boltGroups.OrderBy(id => id)) +
+                "] -> exactly one horizontal + one vertical hole-centre chain in BASE / WEB.");
+
+            return created;
+        }
+
+        private static bool IsBottomFlangeFitting(ViewBounds bounds, ViewBounds main)
+        {
+            var touchesBottom = bounds.MaxY >= main.MinY - EdgeTolerance &&
+                                bounds.MaxY <= main.MinY + EdgeTolerance;
+            var hangsBelow = bounds.MinY < main.MinY - CoordinateTolerance;
+            return touchesBottom && hangsBelow;
+        }
+
+        private static HashSet<int> GetAttachedBoltIds(ModelPart part)
+        {
+            var result = new HashSet<int>();
+            var bolts = part.GetBolts();
+            while (bolts != null && bolts.MoveNext())
+            {
+                var group = bolts.Current as BoltGroup;
+                if (group != null)
+                    result.Add(group.Identifier.ID);
+            }
+            return result;
+        }
+
+        private List<HoleGroup> ProjectBoltGroups(DrawingView view, IEnumerable<int> ids)
+        {
+            var result = new List<HoleGroup>();
+            var handler = _model.GetWorkPlaneHandler();
+            var original = handler.GetCurrentTransformationPlane();
+
+            try
+            {
+                handler.SetCurrentTransformationPlane(new TransformationPlane(view.DisplayCoordinateSystem));
+
+                foreach (var id in ids.Distinct())
+                {
+                    var group = _model.SelectModelObject(new Identifier(id)) as BoltGroup;
+                    if (group == null)
+                        continue;
+
+                    var projected = new HoleGroup { ModelIdentifierId = id };
+                    foreach (var item in group.BoltPositions)
+                    {
+                        var point = item as Point;
+                        if (point != null)
+                            projected.Points.Add(new Point(point.X, point.Y, 0.0));
+                    }
+
+                    if (projected.Points.Count > 0)
+                        result.Add(projected);
+                }
+            }
+            finally
+            {
+                handler.SetCurrentTransformationPlane(original);
             }
 
-            points.Add(new Point(main.MaxX, main.MinY, 0.0));
+            return result;
+        }
 
-            var unique = new List<Point>();
+        private static List<Point> UniqueByX(IEnumerable<Point> points)
+        {
+            var result = new List<Point>();
             foreach (var point in points.OrderBy(point => point.X))
             {
-                if (unique.All(existing => Math.Abs(existing.X - point.X) > CoordinateTolerance))
+                if (result.All(existing => Math.Abs(existing.X - point.X) > CoordinateTolerance))
+                    result.Add(point);
+            }
+            return result;
+        }
+
+        private static List<Point> UniqueByY(IEnumerable<Point> points)
+        {
+            var result = new List<Point>();
+            foreach (var point in points.OrderBy(point => point.Y))
+            {
+                if (result.All(existing => Math.Abs(existing.Y - point.Y) > CoordinateTolerance))
+                    result.Add(point);
+            }
+            return result;
+        }
+
+        private static int CreateDimension(
+            DrawingView view,
+            IEnumerable<Point> points,
+            Vector direction,
+            double offset,
+            bool compareX)
+        {
+            var unique = new List<Point>();
+            foreach (var point in points.OrderBy(point => compareX ? point.X : point.Y))
+            {
+                var coordinate = compareX ? point.X : point.Y;
+                if (unique.All(existing =>
+                    Math.Abs((compareX ? existing.X : existing.Y) - coordinate) > CoordinateTolerance))
                     unique.Add(point);
             }
 
@@ -109,25 +244,14 @@ namespace TeklaDrawingAssistant.Core
             var attributes = new StraightDimensionSet.StraightDimensionSetAttributes(null, "standard");
             attributes.Placing.Placing = DimensionSetBaseAttributes.Placings.Free;
 
-            var handler = new StraightDimensionSetHandler();
-            var dimension = handler.CreateDimensionSet(
-                view.View,
+            var dimension = new StraightDimensionSetHandler().CreateDimensionSet(
+                view,
                 list,
-                new Vector(0.0, -1.0, 0.0),
-                DimensionLayout.GetBaseOffset(view),
+                direction,
+                offset,
                 attributes);
 
-            if (dimension == null)
-            {
-                messages?.Add("BOTTOM FLANGE SETOUT: Tekla did not create the grouped lower chain.");
-                return 0;
-            }
-
-            analysis.Drawing.CommitChanges();
-            messages?.Add(
-                "BOTTOM FLANGE SETOUT: grouped " + fittings.Count +
-                " hanging fitting(s) on one chain below BASE / WEB, including beam start/finish closing dimensions.");
-            return 1;
+            return dimension == null ? 0 : 1;
         }
 
         private static ViewAnalysis FindBaseWebView(DrawingAnalysisResult analysis)
