@@ -12,9 +12,9 @@ namespace TeklaDrawingAssistant.Core
 {
     public sealed class GeneratedViewPostProcessor
     {
-        private const double PreDimensionEndGap = 6.0;
+        private const double PreDimensionEndGap = 4.0;
         private const double FinalFlangeGap = 58.0;
-        private const double FinalEndGap = 10.0;
+        private const double FinalEndGap = 8.0;
         private const double SheetMargin = 4.0;
 
         public void Apply(DrawingAnalysisResult analysis, IList<string> messages)
@@ -58,7 +58,7 @@ namespace TeklaDrawingAssistant.Core
             PlaceEndView(analysis.Drawing, baseView, FindView(analysis.Views, "B-B"), false);
 
             analysis.Drawing.CommitChanges();
-            messages?.Add("Final layout: top/bottom views retain annotation corridors; A-A/B-B are kept immediately beside their member ends.");
+            messages?.Add("Final layout: end sections positioned from their actual steel extents, immediately beside the source member ends.");
         }
 
         private static void MatchGeneratedViewScales(
@@ -187,38 +187,48 @@ namespace TeklaDrawingAssistant.Core
             bool startEnd)
         {
             if (drawing == null || baseView == null || baseView.View == null ||
-                baseView.MainPartBounds == null || section == null || section.View == null)
+                baseView.MainPartBounds == null || section == null || section.View == null ||
+                section.MainPartBounds == null)
                 return;
 
-            var scale = GetScale(baseView.View);
-            var bounds = baseView.MainPartBounds;
-            var horizontal = Math.Abs(bounds.Width) >= Math.Abs(bounds.Height);
+            var baseScale = GetScale(baseView.View);
+            var sectionScale = GetScale(section.View);
+            var baseBounds = baseView.MainPartBounds;
+            var sectionBounds = section.MainPartBounds;
+            var horizontal = Math.Abs(baseBounds.Width) >= Math.Abs(baseBounds.Height);
             Point desired;
 
             if (horizontal)
             {
-                var endInView = startEnd ? bounds.MinX : bounds.MaxX;
-                var endOnSheet = baseView.View.Origin.X + endInView / scale;
-                var centreOnSheet = baseView.View.Origin.Y + bounds.CentreY / scale;
+                var baseEndOnSheet = baseView.View.Origin.X +
+                    (startEnd ? baseBounds.MinX : baseBounds.MaxX) / baseScale;
+                var baseCentreOnSheet = baseView.View.Origin.Y + baseBounds.CentreY / baseScale;
 
-                desired = new Point(
-                    endOnSheet + (startEnd ? -1.0 : 1.0) * (section.View.Width * 0.5 + FinalEndGap),
-                    centreOnSheet,
-                    0.0);
+                // Position from the SECTION STEEL, not View.Width. Dimension strings can
+                // make the view frame huge and were previously pushing B-B far away while
+                // sheet clamping dragged A-A back over the main view.
+                var desiredX = startEnd
+                    ? baseEndOnSheet - FinalEndGap - sectionBounds.MaxX / sectionScale
+                    : baseEndOnSheet + FinalEndGap - sectionBounds.MinX / sectionScale;
+                var desiredY = baseCentreOnSheet - sectionBounds.CentreY / sectionScale;
+
+                desired = new Point(desiredX, desiredY, 0.0);
             }
             else
             {
-                var endInView = startEnd ? bounds.MinY : bounds.MaxY;
-                var endOnSheet = baseView.View.Origin.Y + endInView / scale;
-                var centreOnSheet = baseView.View.Origin.X + bounds.CentreX / scale;
+                var baseEndOnSheet = baseView.View.Origin.Y +
+                    (startEnd ? baseBounds.MinY : baseBounds.MaxY) / baseScale;
+                var baseCentreOnSheet = baseView.View.Origin.X + baseBounds.CentreX / baseScale;
 
-                desired = new Point(
-                    centreOnSheet,
-                    endOnSheet + (startEnd ? -1.0 : 1.0) * (section.View.Height * 0.5 + FinalEndGap),
-                    0.0);
+                var desiredY = startEnd
+                    ? baseEndOnSheet - FinalEndGap - sectionBounds.MaxY / sectionScale
+                    : baseEndOnSheet + FinalEndGap - sectionBounds.MinY / sectionScale;
+                var desiredX = baseCentreOnSheet - sectionBounds.CentreX / sectionScale;
+
+                desired = new Point(desiredX, desiredY, 0.0);
             }
 
-            section.View.Origin = ClampToSheet(drawing, section.View, desired);
+            section.View.Origin = ClampSteelToSheet(drawing, section, desired);
             section.View.Modify();
         }
 
@@ -243,6 +253,34 @@ namespace TeklaDrawingAssistant.Core
 
             section.View.Origin = ClampToSheet(drawing, section.View, desired);
             section.View.Modify();
+        }
+
+        private static Point ClampSteelToSheet(Drawing drawing, ViewAnalysis view, Point desired)
+        {
+            var sheet = drawing.GetSheet();
+            if (sheet == null || sheet.Width <= 0.0 || sheet.Height <= 0.0 ||
+                view == null || view.View == null || view.MainPartBounds == null)
+                return desired;
+
+            var scale = GetScale(view.View);
+            var bounds = view.MainPartBounds;
+
+            var steelMinX = desired.X + bounds.MinX / scale;
+            var steelMaxX = desired.X + bounds.MaxX / scale;
+            var steelMinY = desired.Y + bounds.MinY / scale;
+            var steelMaxY = desired.Y + bounds.MaxY / scale;
+
+            if (steelMinX < SheetMargin)
+                desired.X += SheetMargin - steelMinX;
+            else if (steelMaxX > sheet.Width - SheetMargin)
+                desired.X -= steelMaxX - (sheet.Width - SheetMargin);
+
+            if (steelMinY < SheetMargin)
+                desired.Y += SheetMargin - steelMinY;
+            else if (steelMaxY > sheet.Height - SheetMargin)
+                desired.Y -= steelMaxY - (sheet.Height - SheetMargin);
+
+            return desired;
         }
 
         private static Point ClampToSheet(Drawing drawing, DrawingView view, Point desired)
