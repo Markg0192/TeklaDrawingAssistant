@@ -12,9 +12,9 @@ namespace TeklaDrawingAssistant.Core
 {
     public sealed class GeneratedViewPostProcessor
     {
-        private const double PreDimensionEndGap = 14.0;
+        private const double PreDimensionEndGap = 6.0;
         private const double FinalFlangeGap = 58.0;
-        private const double FinalEndGap = 42.0;
+        private const double FinalEndGap = 10.0;
         private const double SheetMargin = 4.0;
 
         public void Apply(DrawingAnalysisResult analysis, IList<string> messages)
@@ -58,7 +58,7 @@ namespace TeklaDrawingAssistant.Core
             PlaceEndView(analysis.Drawing, baseView, FindView(analysis.Views, "B-B"), false);
 
             analysis.Drawing.CommitChanges();
-            messages?.Add("Final layout: rebuilt annotation corridors after dimensions; top/bottom views spaced vertically and A-A/B-B spaced outward from their member ends.");
+            messages?.Add("Final layout: top/bottom views retain annotation corridors; A-A/B-B are kept immediately beside their member ends.");
         }
 
         private static void MatchGeneratedViewScales(
