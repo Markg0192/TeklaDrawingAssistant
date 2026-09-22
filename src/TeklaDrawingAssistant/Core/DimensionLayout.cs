@@ -4,16 +4,16 @@ namespace TeklaDrawingAssistant.Core
 {
     /// <summary>
     /// StraightDimensionSetHandler.CreateDimensionSet distance is supplied in paper millimetres.
-    /// Keep automatic dimensions deliberately tight to the steel. Final collision/layout work
-    /// happens after all annotations have been created.
+    /// Keep automatic dimensions very tight to the steel. Final collision/layout work happens
+    /// after all annotations have been created.
     /// </summary>
     public static class DimensionLayout
     {
-        private const double BasePaperOffset = 0.75;
-        private const double PartPaperOffset = 0.625;
-        private const double LanePaperSpacing = 0.75;
-        private const double EndPlatePaperOffset = 0.75;
-        private const double LocalFeaturePaperOffset = 0.625;
+        private const double BasePaperOffset = 0.375;
+        private const double PartPaperOffset = 0.30;
+        private const double LanePaperSpacing = 0.375;
+        private const double EndPlatePaperOffset = 0.375;
+        private const double LocalFeaturePaperOffset = 0.30;
 
         public static double GetBaseOffset(ViewAnalysis analysis)
         {
@@ -42,7 +42,7 @@ namespace TeklaDrawingAssistant.Core
 
         public static double ToViewDistance(ViewAnalysis analysis, double paperMillimetres)
         {
-            return paperMillimetres < 0.25 ? 0.25 : paperMillimetres;
+            return paperMillimetres < 0.10 ? 0.10 : paperMillimetres;
         }
     }
 }
