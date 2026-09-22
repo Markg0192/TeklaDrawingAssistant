@@ -15,20 +15,22 @@ namespace TeklaDrawingAssistant.Core
     /// <summary>
     /// Turns the fitting set-out plan into fabrication dimensions.
     ///
-    /// Important layout rules:
-    /// - Dimension the fitting in the view that owns that set-out axis.
-    /// - Hole centres are preferred to arbitrary plate edges.
+    /// Fabrication rules in this pass:
+    /// - Dimensions stay close to the feature.
+    /// - Horizontal dimensions use ABOVE first; vertical dimensions use LEFT first.
+    /// - Hole-based chains are placed outside geometry/set-out chains where both exist.
+    /// - Bottom-flange longitudinal set-out is projected BELOW the member to avoid
+    ///   running dimension lines through the member.
+    /// - End-plate horizontal set-out uses the member centreline.
+    /// - End-plate vertical set-out uses the top flange edge as the primary datum.
+    /// - Top/bottom attachments use the relevant flange edge for vertical set-out.
+    /// - Longitudinal set-out includes both member ends, giving a closing dimension.
     /// - Similar fittings on the same fabrication face share one dimension chain.
-    /// - Horizontal chains go above the view first, then below when the upper lanes fill.
-    /// - Vertical chains go left of the view first, then right when the left lanes fill.
-    /// - Datums are real solid edges/corners; never a floating projected point.
-    /// - Bottom/top attached fittings use the relevant flange edge for vertical set-out.
-    /// - End fittings are forced to the end section that actually belongs to that end.
     /// </summary>
     public sealed class FittingDimensioner
     {
         private const double CoordinateTolerance = 0.5;
-        private const int PrimaryLaneCapacity = 3;
+        private const int PrimaryLaneCapacity = 6;
         private const double EndZoneMinimum = 100.0;
         private const double AttachmentTolerance = 45.0;
 
@@ -57,21 +59,30 @@ namespace TeklaDrawingAssistant.Core
             var created = 0;
 
             messages?.Add("DIMENSIONING ==============================================");
-            messages?.Add("DIM policy: first horizontal dimensions above, first vertical dimensions left; then use below/right lanes as required.");
-            messages?.Add("DIM policy: similar fittings on the same fabrication face are combined on one chain.");
-            messages?.Add("DIM policy: reference points are real member/fitting corners; bottom/top attachments use the relevant flange edge.");
+            messages?.Add("DIM policy: dimensions sit close to the feature; ABOVE/LEFT are preferred before BELOW/RIGHT.");
+            messages?.Add("DIM policy: hole-centre chains are kept outside fitting-geometry chains.");
+            messages?.Add("DIM policy: end plates use member centreline horizontally and flange edge vertically.");
+            messages?.Add("DIM policy: bottom-flange longitudinal set-out projects below the member and includes a closing dimension to the far end.");
 
-            foreach (var group in tasks
+            var groups = tasks
                 .GroupBy(task => task.GroupKey, StringComparer.OrdinalIgnoreCase)
-                .OrderBy(group => group.Key))
+                .Select(group => group.ToList())
+                .OrderBy(group => GetViewKey(group[0].Owner))
+                .ThenBy(group => IsHorizontal(group[0].Axis2D) ? 0 : 1)
+                .ThenBy(group => group.Any(task => task.UsesHoles) ? 1 : 0)
+                .ThenBy(group => group[0].Family)
+                .ThenBy(group => group[0].Axis)
+                .ToList();
+
+            foreach (var items in groups)
             {
-                var items = group.ToList();
                 var first = items[0];
                 var points = items.SelectMany(item => item.TargetPoints).ToList();
                 var partBounds = items
                     .Where(item => item.PartBounds != null)
                     .Select(item => item.PartBounds)
                     .ToList();
+                var usesHoles = items.Any(item => item.UsesHoles);
 
                 var count = CreateGroupedDimension(
                     analysis,
@@ -81,6 +92,7 @@ namespace TeklaDrawingAssistant.Core
                     first.Family,
                     points,
                     partBounds,
+                    usesHoles,
                     lanes);
 
                 created += count;
@@ -91,6 +103,7 @@ namespace TeklaDrawingAssistant.Core
                     ": " + first.Family +
                     " / " + first.Axis +
                     " / parts [" + partIds + "]" +
+                    " / " + (usesHoles ? "holes" : "geometry") +
                     (count > 0 ? " -> one grouped chain created." : " -> skipped (no measurable separation)."));
             }
 
@@ -141,11 +154,12 @@ namespace TeklaDrawingAssistant.Core
                     var partBounds = _geometryReader.GetPartBounds(owner.View, new Identifier(fitting.PartId));
                     var holeGroups = GetVisibleAttachedHoleGroups(part, owner);
                     var points = holeGroups.SelectMany(group => group.Points).ToList();
-                    var targetDescription = holeGroups.Count > 0
+                    var usesHoles = points.Count > 0;
+                    var targetDescription = usesHoles
                         ? "holes " + string.Join(",", holeGroups.Select(group => group.ModelIdentifierId).Distinct())
                         : "fitting geometry";
 
-                    if (points.Count == 0 && partBounds != null)
+                    if (!usesHoles && partBounds != null)
                         points.AddRange(GetCorners(partBounds));
 
                     if (points.Count == 0)
@@ -168,6 +182,7 @@ namespace TeklaDrawingAssistant.Core
                         Family = family,
                         PartBounds = partBounds,
                         TargetPoints = points,
+                        UsesHoles = usesHoles,
                         GroupKey = GetViewKey(owner) + "|" + requirement.Axis + "|" + familyKey
                     });
 
@@ -188,42 +203,47 @@ namespace TeklaDrawingAssistant.Core
             FittingFamily family,
             IList<Point> targetPoints,
             IList<ViewBounds> fittingBounds,
+            bool usesHoles,
             IDictionary<string, int> lanes)
         {
             if (view == null || view.View == null || view.MainPartBounds == null ||
                 targetPoints == null || targetPoints.Count == 0)
                 return 0;
 
-            var unique = UniqueAlongAxis(targetPoints, axis, CoordinateTolerance);
-            if (unique.Count == 0)
+            var uniqueTargets = UniqueAlongAxis(targetPoints, axis, CoordinateTolerance);
+            if (uniqueTargets.Count == 0)
                 return 0;
 
-            var horizontalMeasurement = Math.Abs(axis.X) >= Math.Abs(axis.Y);
-            var lane = AllocateLane(view, horizontalMeasurement, lanes);
-            var referenceBounds = IsEndFamily(family) && fittingBounds.Count > 0
-                ? CombineBounds(fittingBounds)
-                : view.MainPartBounds;
+            var horizontalMeasurement = IsHorizontal(axis);
+            var lane = AllocateLane(view, horizontalMeasurement, memberAxis, family, lanes);
 
-            var reference = GetReferencePoint(
+            var dimensionPoints = BuildDimensionPoints(
                 analysis.MainPart,
                 view,
                 memberAxis,
                 axis,
                 family,
-                unique,
-                referenceBounds,
-                lane.PrimarySide);
+                uniqueTargets,
+                fittingBounds,
+                lane.Side);
 
-            var referenceAlong = Dot(reference, axis);
-            if (unique.All(point => Math.Abs(Dot(point, axis) - referenceAlong) <= CoordinateTolerance))
+            dimensionPoints = UniqueAlongAxis(dimensionPoints, axis, CoordinateTolerance)
+                .OrderBy(point => Dot(point, axis))
+                .ToList();
+
+            if (dimensionPoints.Count < 2)
                 return 0;
 
-            var direction = GetDimensionDirection(axis, horizontalMeasurement, lane.PrimarySide);
+            var firstValue = Dot(dimensionPoints.First(), axis);
+            var lastValue = Dot(dimensionPoints.Last(), axis);
+            if (Math.Abs(lastValue - firstValue) <= CoordinateTolerance)
+                return 0;
+
+            var direction = GetDimensionDirection(axis, lane.Side);
             var offset = DimensionLayout.GetBaseOffset(view) + lane.LaneIndex * DimensionLayout.GetLaneSpacing(view);
 
             var points = new PointList();
-            points.Add(reference);
-            foreach (var point in unique.OrderBy(point => Dot(point, axis)))
+            foreach (var point in dimensionPoints)
                 points.Add(point);
 
             var handler = new StraightDimensionSetHandler();
@@ -231,102 +251,233 @@ namespace TeklaDrawingAssistant.Core
             return dimension == null ? 0 : 1;
         }
 
-        private Point GetReferencePoint(
+        private List<Point> BuildDimensionPoints(
             ModelPart mainPart,
             ViewAnalysis view,
             FittingSetoutAxis memberAxis,
             Axis2D axis,
             FittingFamily family,
             IList<Point> targets,
-            ViewBounds datumBounds,
-            bool primarySide)
+            IList<ViewBounds> fittingBounds,
+            DimensionSide side)
         {
-            var horizontalMeasurement = Math.Abs(axis.X) >= Math.Abs(axis.Y);
-            var averageAlong = targets.Average(point => Dot(point, axis));
+            var result = new List<Point>();
+            var main = view.MainPartBounds;
 
-            if (horizontalMeasurement)
+            if (memberAxis == FittingSetoutAxis.MemberX)
             {
-                double x;
-
-                if (memberAxis == FittingSetoutAxis.MemberX && !IsEndFamily(family))
-                {
-                    var start = ProjectPoint(mainPart.GetCoordinateSystem().Origin, view.View.DisplayCoordinateSystem);
-                    x = Math.Abs(start.X - datumBounds.MinX) <= Math.Abs(start.X - datumBounds.MaxX)
-                        ? datumBounds.MinX
-                        : datumBounds.MaxX;
-                }
-                else
-                {
-                    x = Math.Abs(averageAlong - Dot(new Point(datumBounds.MinX, datumBounds.CentreY, 0.0), axis)) <=
-                        Math.Abs(averageAlong - Dot(new Point(datumBounds.MaxX, datumBounds.CentreY, 0.0), axis))
-                        ? datumBounds.MinX
-                        : datumBounds.MaxX;
-                }
-
-                var y = primarySide ? datumBounds.MaxY : datumBounds.MinY;
-                return new Point(x, y, 0.0);
+                // Any longitudinal set-out receives both main-member ends. This gives
+                // the closing dimension to the far end as standard fabrication practice.
+                result.Add(GetMainEndPoint(main, axis, side, true));
+                result.AddRange(targets);
+                result.Add(GetMainEndPoint(main, axis, side, false));
+                return result;
             }
 
-            double datumY;
+            if (IsEndFamily(family))
+            {
+                if (memberAxis == FittingSetoutAxis.MemberY)
+                {
+                    // End-plate horizontal dimensions originate at the main-member centreline.
+                    result.Add(GetCentrelineDatum(main, axis, side));
+                    result.AddRange(targets);
+                    return result;
+                }
+
+                if (memberAxis == FittingSetoutAxis.MemberZ)
+                {
+                    // Use the top flange as the default vertical fabrication datum in
+                    // an end view, matching the usual 90 / pitch / pitch style chain.
+                    result.Add(GetTopFlangeDatum(main, side));
+                    result.AddRange(targets);
+                    return result;
+                }
+            }
+
             if (memberAxis == FittingSetoutAxis.MemberZ && family == FittingFamily.BottomFlange)
             {
-                datumY = view.MainPartBounds.MinY;
-            }
-            else if (memberAxis == FittingSetoutAxis.MemberZ && family == FittingFamily.TopFlange)
-            {
-                datumY = view.MainPartBounds.MaxY;
-            }
-            else
-            {
-                var minAlong = Dot(new Point(datumBounds.CentreX, datumBounds.MinY, 0.0), axis);
-                var maxAlong = Dot(new Point(datumBounds.CentreX, datumBounds.MaxY, 0.0), axis);
-                datumY = Math.Abs(averageAlong - minAlong) <= Math.Abs(averageAlong - maxAlong)
-                    ? datumBounds.MinY
-                    : datumBounds.MaxY;
+                result.Add(GetBottomFlangeDatum(main, side));
+                result.AddRange(targets);
+                return result;
             }
 
-            var xSide = primarySide ? datumBounds.MinX : datumBounds.MaxX;
-            return new Point(xSide, datumY, 0.0);
+            if (memberAxis == FittingSetoutAxis.MemberZ && family == FittingFamily.TopFlange)
+            {
+                result.Add(GetTopFlangeDatum(main, side));
+                result.AddRange(targets);
+                return result;
+            }
+
+            // Generic fallback: locate from the nearest real main-member edge on the
+            // dimensioned axis. Never invent a free-floating projected datum.
+            result.Add(GetNearestMainEdgeDatum(main, axis, targets, side));
+            result.AddRange(targets);
+            return result;
         }
 
-        private static Vector GetDimensionDirection(Axis2D axis, bool horizontalMeasurement, bool primarySide)
+        private static Point GetMainEndPoint(
+            ViewBounds bounds,
+            Axis2D axis,
+            DimensionSide side,
+            bool start)
+        {
+            var sideCorners = GetCornersOnSide(bounds, side);
+            if (sideCorners.Count == 0)
+                sideCorners = GetCorners(bounds);
+
+            return start
+                ? sideCorners.OrderBy(point => Dot(point, axis)).First()
+                : sideCorners.OrderByDescending(point => Dot(point, axis)).First();
+        }
+
+        private static Point GetCentrelineDatum(ViewBounds bounds, Axis2D axis, DimensionSide side)
+        {
+            if (IsHorizontal(axis))
+            {
+                var y = side == DimensionSide.Below ? bounds.MinY : bounds.MaxY;
+                return new Point(bounds.CentreX, y, 0.0);
+            }
+
+            var x = side == DimensionSide.Right ? bounds.MaxX : bounds.MinX;
+            return new Point(x, bounds.CentreY, 0.0);
+        }
+
+        private static Point GetTopFlangeDatum(ViewBounds bounds, DimensionSide side)
+        {
+            var x = side == DimensionSide.Right ? bounds.MaxX : bounds.MinX;
+            return new Point(x, bounds.MaxY, 0.0);
+        }
+
+        private static Point GetBottomFlangeDatum(ViewBounds bounds, DimensionSide side)
+        {
+            var x = side == DimensionSide.Right ? bounds.MaxX : bounds.MinX;
+            return new Point(x, bounds.MinY, 0.0);
+        }
+
+        private static Point GetNearestMainEdgeDatum(
+            ViewBounds bounds,
+            Axis2D axis,
+            IEnumerable<Point> targets,
+            DimensionSide side)
+        {
+            var average = targets.Average(point => Dot(point, axis));
+            var sideCorners = GetCornersOnSide(bounds, side);
+            if (sideCorners.Count == 0)
+                sideCorners = GetCorners(bounds);
+
+            var minimum = sideCorners.OrderBy(point => Dot(point, axis)).First();
+            var maximum = sideCorners.OrderByDescending(point => Dot(point, axis)).First();
+
+            return Math.Abs(average - Dot(minimum, axis)) <= Math.Abs(average - Dot(maximum, axis))
+                ? minimum
+                : maximum;
+        }
+
+        private static List<Point> GetCornersOnSide(ViewBounds bounds, DimensionSide side)
+        {
+            switch (side)
+            {
+                case DimensionSide.Above:
+                    return new List<Point>
+                    {
+                        new Point(bounds.MinX, bounds.MaxY, 0.0),
+                        new Point(bounds.MaxX, bounds.MaxY, 0.0)
+                    };
+
+                case DimensionSide.Below:
+                    return new List<Point>
+                    {
+                        new Point(bounds.MinX, bounds.MinY, 0.0),
+                        new Point(bounds.MaxX, bounds.MinY, 0.0)
+                    };
+
+                case DimensionSide.Left:
+                    return new List<Point>
+                    {
+                        new Point(bounds.MinX, bounds.MinY, 0.0),
+                        new Point(bounds.MinX, bounds.MaxY, 0.0)
+                    };
+
+                case DimensionSide.Right:
+                    return new List<Point>
+                    {
+                        new Point(bounds.MaxX, bounds.MinY, 0.0),
+                        new Point(bounds.MaxX, bounds.MaxY, 0.0)
+                    };
+
+                default:
+                    return new List<Point>();
+            }
+        }
+
+        private static Vector GetDimensionDirection(Axis2D axis, DimensionSide side)
         {
             var perpX = -axis.Y;
             var perpY = axis.X;
-            double sign;
 
-            if (horizontalMeasurement)
+            switch (side)
             {
-                // Primary horizontal dimensions live ABOVE the view; secondary below.
-                sign = perpY >= 0.0 ? 1.0 : -1.0;
-                if (!primarySide)
-                    sign *= -1.0;
-            }
-            else
-            {
-                // Primary vertical dimensions live LEFT of the view; secondary right.
-                sign = perpX <= 0.0 ? 1.0 : -1.0;
-                if (!primarySide)
-                    sign *= -1.0;
+                case DimensionSide.Above:
+                    if (perpY < 0.0) { perpX *= -1.0; perpY *= -1.0; }
+                    break;
+                case DimensionSide.Below:
+                    if (perpY > 0.0) { perpX *= -1.0; perpY *= -1.0; }
+                    break;
+                case DimensionSide.Left:
+                    if (perpX > 0.0) { perpX *= -1.0; perpY *= -1.0; }
+                    break;
+                case DimensionSide.Right:
+                    if (perpX < 0.0) { perpX *= -1.0; perpY *= -1.0; }
+                    break;
             }
 
-            return new Vector(perpX * sign, perpY * sign, 0.0);
+            return new Vector(perpX, perpY, 0.0);
         }
 
         private static LanePlacement AllocateLane(
             ViewAnalysis view,
             bool horizontalMeasurement,
+            FittingSetoutAxis axis,
+            FittingFamily family,
             IDictionary<string, int> lanes)
         {
-            var key = GetViewKey(view) + "|" + (horizontalMeasurement ? "H" : "V");
-            int count;
-            if (!lanes.TryGetValue(key, out count))
-                count = 0;
-            lanes[key] = count + 1;
+            var preferred = horizontalMeasurement ? DimensionSide.Above : DimensionSide.Left;
 
-            var primary = count < PrimaryLaneCapacity;
-            var laneIndex = primary ? count : count - PrimaryLaneCapacity;
-            return new LanePlacement(primary, laneIndex);
+            // Bottom-flange longitudinal set-out belongs below the member. Projecting
+            // upward runs extension lines through the main member and is harder to read.
+            if (horizontalMeasurement && axis == FittingSetoutAxis.MemberX && family == FittingFamily.BottomFlange)
+                preferred = DimensionSide.Below;
+
+            var alternate = GetOpposite(preferred);
+            var preferredKey = GetViewKey(view) + "|" + preferred;
+            int preferredCount;
+            if (!lanes.TryGetValue(preferredKey, out preferredCount))
+                preferredCount = 0;
+
+            if (preferredCount < PrimaryLaneCapacity)
+            {
+                lanes[preferredKey] = preferredCount + 1;
+                return new LanePlacement(preferred, preferredCount);
+            }
+
+            var alternateKey = GetViewKey(view) + "|" + alternate;
+            int alternateCount;
+            if (!lanes.TryGetValue(alternateKey, out alternateCount))
+                alternateCount = 0;
+            lanes[alternateKey] = alternateCount + 1;
+            return new LanePlacement(alternate, alternateCount);
+        }
+
+        private static DimensionSide GetOpposite(DimensionSide side)
+        {
+            switch (side)
+            {
+                case DimensionSide.Above: return DimensionSide.Below;
+                case DimensionSide.Below: return DimensionSide.Above;
+                case DimensionSide.Left: return DimensionSide.Right;
+                case DimensionSide.Right: return DimensionSide.Left;
+                default: return DimensionSide.Above;
+            }
         }
 
         private ViewAnalysis ResolveViewForPart(
@@ -383,9 +534,6 @@ namespace TeklaDrawingAssistant.Core
                 var dA = Math.Abs(centreX - main.MinimumPoint.X);
                 var dB = Math.Abs(centreX - main.MaximumPoint.X);
 
-                // Being near an end is not enough. Only a thin transverse plate is an
-                // end plate. This prevents an end-adjacent gusset/web plate being forced
-                // into A-A/B-B merely because its centre sits inside the end search zone.
                 var sx = Math.Abs(fitting.MaximumPoint.X - fitting.MinimumPoint.X);
                 var sy = Math.Abs(fitting.MaximumPoint.Y - fitting.MinimumPoint.Y);
                 var sz = Math.Abs(fitting.MaximumPoint.Z - fitting.MinimumPoint.Z);
@@ -461,21 +609,14 @@ namespace TeklaDrawingAssistant.Core
             };
         }
 
-        private static ViewBounds CombineBounds(IEnumerable<ViewBounds> bounds)
-        {
-            var list = bounds.ToList();
-            return new ViewBounds
-            {
-                MinX = list.Min(item => item.MinX),
-                MaxX = list.Max(item => item.MaxX),
-                MinY = list.Min(item => item.MinY),
-                MaxY = list.Max(item => item.MaxY)
-            };
-        }
-
         private static bool IsEndFamily(FittingFamily family)
         {
             return family == FittingFamily.EndA || family == FittingFamily.EndB;
+        }
+
+        private static bool IsHorizontal(Axis2D axis)
+        {
+            return Math.Abs(axis.X) >= Math.Abs(axis.Y);
         }
 
         private static List<Point> UniqueAlongAxis(IEnumerable<Point> points, Axis2D axis, double tolerance)
@@ -493,18 +634,6 @@ namespace TeklaDrawingAssistant.Core
         private static double Dot(Point point, Axis2D axis)
         {
             return point.X * axis.X + point.Y * axis.Y;
-        }
-
-        private static Point ProjectPoint(Point globalPoint, CoordinateSystem viewCs)
-        {
-            var x = Normalize(new Vector(viewCs.AxisX));
-            var y = Normalize(new Vector(viewCs.AxisY));
-            var relative = new Vector(
-                globalPoint.X - viewCs.Origin.X,
-                globalPoint.Y - viewCs.Origin.Y,
-                globalPoint.Z - viewCs.Origin.Z);
-
-            return new Point(Dot(relative, x), Dot(relative, y), 0.0);
         }
 
         private static Axis2D ProjectAxis(Vector globalAxis, CoordinateSystem viewCs)
@@ -662,6 +791,14 @@ namespace TeklaDrawingAssistant.Core
             Other
         }
 
+        private enum DimensionSide
+        {
+            Above,
+            Below,
+            Left,
+            Right
+        }
+
         private sealed class DimensionTask
         {
             public int PartId { get; set; }
@@ -671,18 +808,19 @@ namespace TeklaDrawingAssistant.Core
             public FittingFamily Family { get; set; }
             public ViewBounds PartBounds { get; set; }
             public List<Point> TargetPoints { get; set; }
+            public bool UsesHoles { get; set; }
             public string GroupKey { get; set; }
         }
 
         private sealed class LanePlacement
         {
-            public LanePlacement(bool primarySide, int laneIndex)
+            public LanePlacement(DimensionSide side, int laneIndex)
             {
-                PrimarySide = primarySide;
+                Side = side;
                 LaneIndex = laneIndex;
             }
 
-            public bool PrimarySide { get; }
+            public DimensionSide Side { get; }
             public int LaneIndex { get; }
         }
 
