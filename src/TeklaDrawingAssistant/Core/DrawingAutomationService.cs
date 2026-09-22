@@ -17,7 +17,6 @@ namespace TeklaDrawingAssistant.Core
         private readonly GeneratedViewPostProcessor _viewPostProcessor;
         private readonly FittingSetoutPlanner _setoutPlanner;
         private readonly FittingDimensioner _fittingDimensioner;
-        private readonly BottomFlangeFittingDimensioner _bottomFlangeFittingDimensioner;
         private readonly MainPartHoleDimensioner _mainPartHoleDimensioner;
         private readonly EndPlateDimensioner _endPlateDimensioner;
 
@@ -32,7 +31,6 @@ namespace TeklaDrawingAssistant.Core
             _viewPostProcessor = new GeneratedViewPostProcessor();
             _setoutPlanner = new FittingSetoutPlanner(session.Model);
             _fittingDimensioner = new FittingDimensioner(session.Model);
-            _bottomFlangeFittingDimensioner = new BottomFlangeFittingDimensioner(session.Model);
             _mainPartHoleDimensioner = new MainPartHoleDimensioner(session.Model);
             _endPlateDimensioner = new EndPlateDimensioner(session.Model);
         }
@@ -119,6 +117,8 @@ namespace TeklaDrawingAssistant.Core
             analysis = _analyzer.Analyze();
             var endViews = _endViewBuilder.Build(analysis, viewMessages);
 
+            // Before dimensions we only clean generated views and force their scale.
+            // No placement/tidying is performed until ALL annotation work is complete.
             analysis = _analyzer.Analyze();
             _viewPostProcessor.Apply(analysis, viewMessages);
             analysis.Drawing.CommitChanges();
@@ -126,11 +126,6 @@ namespace TeklaDrawingAssistant.Core
             var dimensionAnalysis = _analyzer.Analyze();
             var setoutPlan = _setoutPlanner.Build(dimensionAnalysis);
             _fittingDimensioner.Dimension(dimensionAnalysis, setoutPlan, dimensionMessages);
-
-            // Reinstate the common bottom-flange fitting set-out in the retained web view.
-            // This is deliberately below the member and includes fitting widths + closing dim.
-            var bottomFlangeAnalysis = _analyzer.Analyze();
-            _bottomFlangeFittingDimensioner.Dimension(bottomFlangeAnalysis, dimensionMessages);
 
             // Main-member holes are dimensioned by structural face ownership:
             // WEB only in the base/web view; TOP/BOTTOM flange only in their flange views.
@@ -142,6 +137,8 @@ namespace TeklaDrawingAssistant.Core
             var endDimensionAnalysis = _analyzer.Analyze();
             _endPlateDimensioner.Dimension(endDimensionAnalysis, dimensionMessages);
 
+            // FINAL operation only: all dimensions/marks/etc. must exist before views are
+            // packed. This pass uses the true paper-space view bounding boxes.
             var finalLayoutAnalysis = _analyzer.Analyze();
             _viewPostProcessor.FinaliseLayout(finalLayoutAnalysis, viewMessages);
             finalLayoutAnalysis.Drawing.CommitChanges();
@@ -168,9 +165,9 @@ namespace TeklaDrawingAssistant.Core
             log.AppendLine();
             log.AppendLine("Final straight dimension sets on drawing: " + finalDimensionCount + ".");
             log.AppendLine("End sections use a dedicated end-plate dimensioning pass after the generic fitting dimensions.");
-            log.AppendLine("Bottom-flange hanging fittings get one dedicated longitudinal chain below the base/web view.");
+            log.AppendLine("Bottom-flange fittings use the generic hole-centre fitting set-out only; no second plate-edge chain is added.");
             log.AppendLine("Main-part holes use structural face ownership: WEB -> base/web, TOP -> top flange, BOTTOM -> bottom flange.");
-            log.AppendLine("Final view layout is applied after dimensions so annotation corridors are preserved.");
+            log.AppendLine("Final view layout is the last operation and uses final annotation bounding boxes.");
             log.AppendLine("Part marks, weld marks, cuts/notches and other misc annotations remain for later stages.");
 
             return log.ToString();
