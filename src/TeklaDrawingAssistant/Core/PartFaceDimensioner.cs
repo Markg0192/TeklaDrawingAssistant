@@ -33,6 +33,8 @@ namespace TeklaDrawingAssistant.Core
 
             var created = 0;
             var lane = 0;
+            var baseOffset = DimensionLayout.GetPartOffset(analysis);
+            var laneSpacing = DimensionLayout.GetLaneSpacing(analysis);
 
             foreach (var id in ownedPartIds)
             {
@@ -45,7 +47,7 @@ namespace TeklaDrawingAssistant.Core
                 if (bounds == null)
                     continue;
 
-                var offset = Math.Max(15.0, options.DimensionOffset * 0.65) + lane * 8.0;
+                var offset = baseOffset + lane * laneSpacing;
                 created += DimensionHorizontalExtent(analysis, bounds, offset, options);
                 created += DimensionVerticalExtent(analysis, bounds, offset, options);
                 lane++;
