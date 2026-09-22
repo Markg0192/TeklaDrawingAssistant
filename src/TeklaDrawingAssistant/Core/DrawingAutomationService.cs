@@ -13,7 +13,7 @@ namespace TeklaDrawingAssistant.Core
         private readonly FabricationContextBuilder _contextBuilder;
         private readonly DimensionRuleEngine _ruleEngine;
         private readonly FlangeOnlyViewCreationPlanner _flangeViewPlanner;
-        private readonly OutsideInEndSectionBuilder _endSectionBuilder;
+        private readonly ControlledEndViewBuilder _endViewBuilder;
 
         public DrawingAutomationService(TeklaSession session)
         {
@@ -22,7 +22,7 @@ namespace TeklaDrawingAssistant.Core
             _contextBuilder = new FabricationContextBuilder();
             _ruleEngine = new DimensionRuleEngine();
             _flangeViewPlanner = new FlangeOnlyViewCreationPlanner(session.Model);
-            _endSectionBuilder = new OutsideInEndSectionBuilder(session.Model);
+            _endViewBuilder = new ControlledEndViewBuilder(session.Model);
         }
 
         public DrawingAnalysisResult Analyze()
@@ -101,18 +101,14 @@ namespace TeklaDrawingAssistant.Core
             log.AppendLine("VIEW CREATION ONLY");
             log.AppendLine(new string('-', 40));
 
-            // Keep the original view as the web/base view and only create flange views here.
-            // End sections are handled separately so no older inside-out section attempt can
-            // run before the fabrication-correct outside-in attempt.
             var flangeViews = _flangeViewPlanner.RebuildFlangeViews(analysis, messages);
 
-            // Re-analyse after adding the flange views. The retained original base view is
-            // still selected by the end builder, while the new view list is now current.
+            // Re-read after flange creation, then build end views without Tekla's
+            // CreateSectionView command. We control the end coordinate system, restriction
+            // volume and section mark ourselves so drawing defaults cannot decide what steel
+            // belongs in the end view.
             analysis = _analyzer.Analyze();
-
-            // End policy is strict: OUTSIDE plate face first, looking towards the member.
-            // The inside plate face is tried only if the outside attempt genuinely fails.
-            var endSections = _endSectionBuilder.Build(analysis, messages);
+            var endViews = _endViewBuilder.Build(analysis, messages);
 
             foreach (var message in messages)
                 log.AppendLine("  " + message);
@@ -123,7 +119,7 @@ namespace TeklaDrawingAssistant.Core
             var finalAnalysis = _analyzer.Analyze();
             log.AppendLine();
             log.AppendLine($"Flange views created: {flangeViews}.");
-            log.AppendLine($"End sections created: {endSections}.");
+            log.AppendLine($"End views created: {endViews}.");
             log.AppendLine($"Final views: {finalAnalysis.Views.Count}");
             log.AppendLine("Dimension creation is currently disabled while view setup is being tuned.");
 
