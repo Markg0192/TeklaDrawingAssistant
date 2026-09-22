@@ -7,6 +7,7 @@ using Tekla.Structures;
 using Tekla.Structures.Drawing;
 using Tekla.Structures.Geometry3d;
 using Tekla.Structures.Model;
+using DrawingView = Tekla.Structures.Drawing.View;
 using ModelPart = Tekla.Structures.Model.Part;
 
 namespace TeklaDrawingAssistant.Core
