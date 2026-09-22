@@ -13,6 +13,7 @@ namespace TeklaDrawingAssistant.Core
         private readonly HoleDimensioner _dimensioner;
         private readonly FabricationContextBuilder _contextBuilder;
         private readonly DimensionRuleEngine _ruleEngine;
+        private readonly FaceViewPlanner _faceViewPlanner;
 
         public DrawingAutomationService(TeklaSession session)
         {
@@ -21,6 +22,7 @@ namespace TeklaDrawingAssistant.Core
             _dimensioner = new HoleDimensioner();
             _contextBuilder = new FabricationContextBuilder();
             _ruleEngine = new DimensionRuleEngine();
+            _faceViewPlanner = new FaceViewPlanner(session.Model);
         }
 
         public DrawingAnalysisResult Analyze()
@@ -89,14 +91,37 @@ namespace TeklaDrawingAssistant.Core
 
         public string DimensionHoles(DimensioningOptions options)
         {
-            var analysis = _analyzer.Analyze();
             var log = new StringBuilder();
-            var totalCreated = 0;
+            var viewMessages = new System.Collections.Generic.List<string>();
 
+            var analysis = _analyzer.Analyze();
             log.AppendLine($"Drawing: {analysis.Drawing.Mark} - {analysis.Drawing.Name}");
-            log.AppendLine($"Views found: {analysis.Views.Count}");
-            log.AppendLine();
+            log.AppendLine($"Starting views: {analysis.Views.Count}");
 
+            var createdViews = _faceViewPlanner.EnsureRequiredViews(analysis, viewMessages);
+            if (createdViews > 0)
+            {
+                // Re-read the drawing so the new Tekla views and their drawing objects are included.
+                analysis = _analyzer.Analyze();
+            }
+
+            var ownership = _faceViewPlanner.BuildOwnership(analysis);
+
+            log.AppendLine($"Face views created: {createdViews}");
+            foreach (var message in viewMessages)
+                log.AppendLine("  " + message);
+
+            log.AppendLine();
+            log.AppendLine("FEATURE VIEW OWNERSHIP");
+            log.AppendLine(new string('-', 40));
+            foreach (var message in ownership.Messages)
+                log.AppendLine("  " + message);
+
+            log.AppendLine();
+            log.AppendLine("DIMENSIONING");
+            log.AppendLine(new string('-', 40));
+
+            var totalCreated = 0;
             foreach (var view in analysis.Views)
             {
                 if (!view.ContainsMainPart)
@@ -105,15 +130,22 @@ namespace TeklaDrawingAssistant.Core
                     continue;
                 }
 
-                if (view.Kind == ViewKind.Unknown)
+                var ownedHoleGroups = ownership.GetHoleGroups(view.View);
+                if (ownedHoleGroups.Count == 0)
                 {
-                    log.AppendLine($"{view.Name}: skipped - orientation not recognised.");
+                    log.AppendLine($"{view.Name}: no hole groups owned by this face view.");
                     continue;
                 }
 
-                var created = _dimensioner.Dimension(view, options);
+                if (view.Kind == ViewKind.Unknown)
+                {
+                    log.AppendLine($"{view.Name}: owns {ownedHoleGroups.Count} hole group(s), but the view is a custom/skew face and its dimension rule is not implemented yet.");
+                    continue;
+                }
+
+                var created = _dimensioner.Dimension(view, options, ownedHoleGroups);
                 totalCreated += created;
-                log.AppendLine($"{view.Name}: {view.Kind}, {view.HolePoints.Count} hole points, {created} dimension sets created.");
+                log.AppendLine($"{view.Name}: {view.Kind}, owns {ownedHoleGroups.Count} hole group(s), {created} dimension sets created.");
             }
 
             analysis.Drawing.CommitChanges();
